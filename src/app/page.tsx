@@ -50,10 +50,11 @@ async function supabaseCheck(): Promise<Check> {
 async function headCount(
   url: string,
   key: string,
-  table: string
+  table: string,
+  filter?: string
 ): Promise<number | null> {
   try {
-    const res = await fetch(`${url}/rest/v1/${table}?select=*`, {
+    const res = await fetch(`${url}/rest/v1/${table}?select=*${filter ? `&${filter}` : ""}`, {
       method: "HEAD",
       headers: {
         apikey: key,
@@ -83,12 +84,16 @@ async function databaseChecks(): Promise<Check[]> {
     ];
   }
 
-  const [config, startups, problems, regions] = await Promise.all([
-    headCount(url, key, "scoring_config"),
-    headCount(url, key, "startups"),
-    headCount(url, key, "problems"),
-    headCount(url, key, "country_regions"),
-  ]);
+  const [config, startups, problems, regions, scored, vectors, briefs] =
+    await Promise.all([
+      headCount(url, key, "scoring_config"),
+      headCount(url, key, "startups"),
+      headCount(url, key, "problems"),
+      headCount(url, key, "country_regions"),
+      headCount(url, key, "startup_profiles", "base_readiness=not.is.null"),
+      headCount(url, key, "startup_profiles", "embedding=not.is.null"),
+      headCount(url, key, "problems", "enriched_brief=not.is.null"),
+    ]);
 
   const schema: Check =
     config === null
@@ -116,7 +121,20 @@ async function databaseChecks(): Promise<Check[]> {
           state: startups > 0 && problems > 0 ? "ready" : "attention",
         };
 
-  return [schema, seed];
+  const pipeline: Check =
+    vectors === null || vectors === 0
+      ? {
+          label: "AI pipeline",
+          detail: "Embeddings and briefs not generated yet",
+          state: "waiting",
+        }
+      : {
+          label: "AI pipeline",
+          detail: `${scored} scored · ${vectors} embedded · ${briefs} problem briefs`,
+          state: vectors === startups && briefs === problems ? "ready" : "attention",
+        };
+
+  return [schema, seed, pipeline];
 }
 
 const chipStyles: Record<CheckState, string> = {
@@ -166,7 +184,7 @@ export default async function Home() {
         <div className="mx-auto w-full max-w-6xl px-6 py-24">
           <div className="max-w-2xl animate-rise">
             <p className="text-xs font-medium uppercase tracking-widest text-forest">
-              Phase 1 · Schema &amp; seed
+              Phase 2 · Enrichment &amp; embeddings
             </p>
             <h1 className="mt-4 font-display text-4xl leading-tight tracking-tight text-ink sm:text-5xl">
               Deployable startups, matched to real problem statements.
@@ -204,7 +222,7 @@ export default async function Home() {
       <footer className="border-t border-line">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center px-6">
           <p className="text-xs text-ink-faint">
-            Phase 1 of 8 — schema, security rules, seed data.
+            Phase 2 of 8 — enrichment, embeddings, scoring backfill.
           </p>
         </div>
       </footer>
