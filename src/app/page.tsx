@@ -47,6 +47,78 @@ async function supabaseCheck(): Promise<Check> {
   }
 }
 
+async function headCount(
+  url: string,
+  key: string,
+  table: string
+): Promise<number | null> {
+  try {
+    const res = await fetch(`${url}/rest/v1/${table}?select=*`, {
+      method: "HEAD",
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Prefer: "count=exact",
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const total = res.headers.get("content-range")?.split("/")[1];
+    return total && total !== "*" ? Number(total) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function databaseChecks(): Promise<Check[]> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    const detail = "Awaiting Supabase keys in .env.local";
+    return [
+      { label: "Database schema", detail, state: "waiting" },
+      { label: "Seed data", detail, state: "waiting" },
+    ];
+  }
+
+  const [config, startups, problems, regions] = await Promise.all([
+    headCount(url, key, "scoring_config"),
+    headCount(url, key, "startups"),
+    headCount(url, key, "problems"),
+    headCount(url, key, "country_regions"),
+  ]);
+
+  const schema: Check =
+    config === null
+      ? {
+          label: "Database schema",
+          detail: "Migrations not applied yet",
+          state: "waiting",
+        }
+      : {
+          label: "Database schema",
+          detail: `Tables in place, scoring config loaded (${config} row)`,
+          state: "ready",
+        };
+
+  const seed: Check =
+    startups === null || problems === null
+      ? {
+          label: "Seed data",
+          detail: "Not seeded yet",
+          state: "waiting",
+        }
+      : {
+          label: "Seed data",
+          detail: `${startups} startups · ${problems} problems · ${regions ?? 0} countries mapped`,
+          state: startups > 0 && problems > 0 ? "ready" : "attention",
+        };
+
+  return [schema, seed];
+}
+
 const chipStyles: Record<CheckState, string> = {
   ready: "bg-forest-tint text-forest-deep",
   waiting: "bg-well text-ink-secondary",
@@ -74,6 +146,7 @@ export default async function Home() {
       state: process.env.ANTHROPIC_MODEL ? "ready" : "waiting",
     },
     await supabaseCheck(),
+    ...(await databaseChecks()),
   ];
 
   return (
@@ -93,7 +166,7 @@ export default async function Home() {
         <div className="mx-auto w-full max-w-6xl px-6 py-24">
           <div className="max-w-2xl animate-rise">
             <p className="text-xs font-medium uppercase tracking-widest text-forest">
-              Phase 0 · Scaffold
+              Phase 1 · Schema &amp; seed
             </p>
             <h1 className="mt-4 font-display text-4xl leading-tight tracking-tight text-ink sm:text-5xl">
               Deployable startups, matched to real problem statements.
@@ -131,7 +204,7 @@ export default async function Home() {
       <footer className="border-t border-line">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center px-6">
           <p className="text-xs text-ink-faint">
-            Phase 0 of 8 — scaffold, environment, database connection.
+            Phase 1 of 8 — schema, security rules, seed data.
           </p>
         </div>
       </footer>
