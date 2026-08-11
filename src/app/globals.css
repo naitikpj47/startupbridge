@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+/*
+ * StartupBridge design tokens.
+ * Quiet, editorial, institutional-grade: warm paper, near-black ink,
+ * one forest-green accent, hairline borders instead of shadows.
+ */
+@theme {
+  /* Surfaces */
+  --color-paper: #fafaf7;
+  --color-surface: #ffffff;
+  --color-well: #f3f2ec;
+
+  /* Ink */
+  --color-ink: #191916;
+  --color-ink-secondary: #5f5f58;
+  --color-ink-faint: #6e6e65; /* 4.9:1 on paper — keeps AA at 12px */
+
+  /* Accent — the only accent */
+  --color-forest: #175a3c;
+  --color-forest-deep: #0f4630;
+  --color-forest-tint: #e9f1ec;
+
+  /* Hairlines */
+  --color-line: #e7e6df;
+  --color-line-strong: #d9d8cf;
+
+  /* Muted semantics */
+  --color-warn: #6f5a19; /* 5.8:1 on warn-tint — keeps AA at 12px */
+  --color-warn-tint: #f6efdd;
+  --color-err: #964742;
+  --color-err-tint: #f7ecea;
+
+  /* Type */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-fraunces), Georgia, serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace;
+
+  /* Motion — 150-250ms ease-out, nothing bouncy */
+  --animate-rise: rise 0.2s ease-out both;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-forest-tint);
+  color: var(--color-forest-deep);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-forest);
+  outline-offset: 2px;
+}
