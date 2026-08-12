@@ -28,12 +28,24 @@ export interface Job {
   max_attempts: number;
 }
 
+/** Someone is watching these; everything else is background work. */
+const FOREGROUND: ReadonlySet<JobType> = new Set([
+  "source_candidates",
+  "prefill_url",
+]);
+
+export function jobPriority(type: JobType): number {
+  return FOREGROUND.has(type) ? 10 : 0;
+}
+
 export async function enqueueJob(
   sb: SupabaseClient,
   type: JobType,
   payload: Record<string, string>
 ): Promise<void> {
-  const { error } = await sb.from("jobs").insert({ type, payload });
+  const { error } = await sb
+    .from("jobs")
+    .insert({ type, payload, priority: jobPriority(type) });
   if (error) throw new Error(`enqueue ${type}: ${error.message}`);
 }
 

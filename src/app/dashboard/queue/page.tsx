@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { requireOfficer } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { approveStartup, rejectStartup, markClaimed } from "../actions";
+import {
+  approveStartup,
+  rejectStartup,
+  markClaimed,
+  enrichOneStartup,
+} from "../actions";
 import { ConfidenceChip, StatusChip, FlagList, PageTitle, EmptyState } from "../bits";
 import type { ReviewFlag } from "@/lib/provenance";
 
@@ -172,6 +177,16 @@ export default async function QueuePage({
                       Reject
                     </button>
                   </form>
+                  {!profile?.base_readiness && (
+                    <form action={enrichOneStartup.bind(null, s.id)}>
+                      <button
+                        className="text-xs text-forest underline-offset-2 hover:underline"
+                        title="Fetch their site and fill in the profile — one model call"
+                      >
+                        Fetch profile
+                      </button>
+                    </form>
+                  )}
                   {!s.claimed && (
                     <form action={markClaimed.bind(null, s.id)}>
                       <button className="text-xs text-ink-faint underline-offset-2 hover:text-ink hover:underline">

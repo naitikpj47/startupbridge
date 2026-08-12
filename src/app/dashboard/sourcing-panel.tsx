@@ -27,6 +27,8 @@ export function SourcingPanel({
     status: string;
     candidatesFound: number | null;
     inQueue: number;
+    jobsAhead: number;
+    profiling: number;
   } | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -52,8 +54,15 @@ export function SourcingPanel({
       setStatus(s);
 
       if (s.status === "completed" || s.status === "failed") {
-        stop();
         setRunning(false);
+        // The hunt is done, but the candidates it found are still being
+        // profiled in the background. Keep nudging the worker so those
+        // finish while the officer reads, then stop.
+        if (s.profiling > 0 && Date.now() - startedAt < 6 * 60_000) {
+          kick();
+          return;
+        }
+        stop();
         return;
       }
       if (s.status === "queued") kick();
@@ -95,16 +104,27 @@ export function SourcingPanel({
         <Link href="/dashboard/queue" className="underline underline-offset-2">
           Review them →
         </Link>
+        {(status?.profiling ?? 0) > 0 && (
+          <span className="mt-1 block text-xs text-ink-faint">
+            Filling in their profiles in the background — you can review them
+            now; details will appear as they land.
+          </span>
+        )}
       </div>
     );
   }
 
   if (running) {
+    const ahead = status?.jobsAhead ?? 0;
     return (
       <div className="mx-auto mt-5 max-w-md">
         <div className="flex items-center justify-center gap-2 text-sm text-forest-deep">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-forest" />
-          Searching the open web — this takes under a minute.
+          {status === null
+            ? "Starting the search…"
+            : ahead > 0
+              ? `Queued — ${ahead} job${ahead === 1 ? "" : "s"} ahead of this one.`
+              : "Searching the open web — four queries, running now."}
         </div>
         <div className="mt-4 space-y-2">
           <div className="shimmer h-3.5 w-full rounded" />

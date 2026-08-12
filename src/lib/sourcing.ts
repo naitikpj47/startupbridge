@@ -314,11 +314,21 @@ export async function sourceCandidatesForProblem(
           : {},
       });
 
-      // Full enrichment (site fetch + extraction + scoring + embedding).
-      await sb.from("jobs").insert({
-        type: "enrich_startup",
-        payload: { startup_id: startup.id },
-      });
+      // Auto-profiling is opt-in (ENRICH_SOURCED_CANDIDATES=true). It
+      // costs a site fetch and a Claude call per candidate, on
+      // companies nobody has looked at yet — worth it once a pool is
+      // being run in earnest, wasteful while credit is tight. Reviewers
+      // can pull any single profile on demand from the queue.
+      //
+      // When on, it queues at background priority (0) so it can never
+      // delay the next hunt: claim_next_jobs takes priority before age.
+      if (process.env.ENRICH_SOURCED_CANDIDATES === "true") {
+        await sb.from("jobs").insert({
+          type: "enrich_startup",
+          payload: { startup_id: startup.id },
+          priority: 0,
+        });
+      }
       inserted++;
     }
 

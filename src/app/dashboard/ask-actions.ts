@@ -186,9 +186,25 @@ export async function sourcingStatus(problemId: string) {
     .from("startups")
     .select("*", { count: "exact", head: true })
     .eq("sourced_for", problemId);
+
+  // How much work sits ahead of this hunt, so the UI can be specific
+  // instead of spinning: "3 jobs ahead" beats an indefinite shimmer.
+  const { data: ahead } = await admin.rpc("sourcing_queue_depth", {
+    p_problem_id: problemId,
+  });
+
+  // Candidates from this problem still waiting to be profiled.
+  const { count: profiling } = await admin
+    .from("jobs")
+    .select("*", { count: "exact", head: true })
+    .eq("type", "enrich_startup")
+    .in("status", ["queued", "running"]);
+
   return {
     status: run?.status ?? "queued",
     candidatesFound: run?.candidates_found ?? null,
     inQueue: count ?? 0,
+    jobsAhead: typeof ahead === "number" ? ahead : 0,
+    profiling: profiling ?? 0,
   };
 }

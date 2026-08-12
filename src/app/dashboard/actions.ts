@@ -6,14 +6,28 @@ import { requireOfficer } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { runMatching } from "@/lib/matching/engine";
+import { jobPriority, type JobType } from "@/lib/jobs";
 import { normalizeDomain } from "@/lib/domain";
 
 /** Enqueue jobs with the service role (the jobs table is read-only to
  * officers by design — the queue is machinery, not data). */
 async function enqueue(type: string, payload: Record<string, string>) {
   const admin = createSupabaseAdminClient();
-  const { error } = await admin.from("jobs").insert({ type, payload });
+  const { error } = await admin
+    .from("jobs")
+    .insert({ type, payload, priority: jobPriority(type as JobType) });
   if (error) throw new Error(`enqueue ${type}: ${error.message}`);
+}
+
+/**
+ * Pull a full profile for one candidate, on demand: fetch the site,
+ * extract with Claude, score, embed. Reviewer-triggered so credit is
+ * spent on companies a human has actually looked at.
+ */
+export async function enrichOneStartup(startupId: string) {
+  await requireOfficer();
+  await enqueue("enrich_startup", { startup_id: startupId });
+  revalidatePath("/dashboard/queue");
 }
 
 // ── Review queue ────────────────────────────────────────────────────────
