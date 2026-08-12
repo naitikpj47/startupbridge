@@ -1,3 +1,5 @@
+import { requireOfficer } from "@/lib/server/auth";
+
 export const dynamic = "force-dynamic";
 
 type CheckState = "ready" | "waiting" | "attention";
@@ -165,6 +167,9 @@ const chipLabels: Record<CheckState, string> = {
 };
 
 export default async function Home() {
+  // Build/pipeline internals: team only.
+  await requireOfficer();
+
   const checks: Check[] = [
     {
       label: "Application scaffold",
@@ -199,15 +204,15 @@ export default async function Home() {
         <div className="mx-auto w-full max-w-6xl px-6 py-24">
           <div className="max-w-2xl animate-rise">
             <p className="text-xs font-medium uppercase tracking-widest text-forest">
-              Phase 3 · Matching
+              System status
             </p>
             <h1 className="mt-4 font-display text-4xl leading-tight tracking-tight text-ink sm:text-5xl">
               Deployable startups, matched to real problem statements.
             </h1>
             <p className="mt-5 text-base leading-relaxed text-ink-secondary">
-              A matchmaking platform connecting development-focused startups
-              with problem statements posted by program officers. This page
-              reports setup status while the foundation is laid.
+              Live health of the platform: configuration, database, the
+              enrichment pipeline, and the matching engine. Anything not
+              reading Ready needs attention before it affects officers.
             </p>
           </div>
 
@@ -237,7 +242,7 @@ export default async function Home() {
       <footer className="border-t border-line">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center px-6">
           <p className="text-xs text-ink-faint">
-            Phase 3 of 8 — matching engine, gate, threshold, fallback.
+            Team-only. Counts come straight from the database.
           </p>
         </div>
       </footer>

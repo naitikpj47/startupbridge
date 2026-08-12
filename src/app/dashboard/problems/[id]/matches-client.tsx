@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { MatchRow } from "@/lib/matching/engine";
 import { setMatchStatus, regenerateBriefing, addOutreach } from "../../actions";
 import { ConfidenceChip, StatusChip } from "../../bits";
+import { CountUp } from "../../count-up";
 
 export interface MatchDisplay extends MatchRow {
   startupPageId: string;
@@ -98,8 +99,12 @@ function MatchCard({ match, adjacent }: { match: MatchDisplay; adjacent: boolean
       <div className="flex items-center gap-4 p-4">
         {/* Score with breakdown on hover */}
         <div className="group relative shrink-0 cursor-default">
-          <span className="font-mono text-2xl tabular-nums tracking-tight text-ink">
-            {match.final_score}
+          <CountUp
+            value={match.final_score}
+            className="font-mono text-2xl tabular-nums tracking-tight text-ink"
+          />
+          <span className="sr-only">
+            final score {match.final_score} out of 100
           </span>
           <div className="invisible absolute left-0 top-full z-10 mt-1 w-52 border border-line bg-surface p-3 text-xs shadow-none group-hover:visible">
             {[

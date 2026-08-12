@@ -1,4 +1,5 @@
 import type { ReviewFlag } from "@/lib/provenance";
+import { CountUp } from "./count-up";
 
 /** Quiet chip beside every score: "LOW (2 of 6 signals)" — never blended
  * into the score itself. */
@@ -66,9 +67,10 @@ export function FlagList({ flags }: { flags: ReviewFlag[] | null }) {
 
 export function BigScore({ value }: { value: number | null }) {
   return (
-    <span className="font-mono text-2xl tabular-nums tracking-tight text-ink">
-      {value ?? "—"}
-    </span>
+    <CountUp
+      value={value}
+      className="font-mono text-2xl tabular-nums tracking-tight text-ink"
+    />
   );
 }
 

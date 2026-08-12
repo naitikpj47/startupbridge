@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { askForHelp, sourcingStatus, type AskOutcome } from "./ask-actions";
 import { ConfidenceChip } from "./bits";
+import { CountUp } from "./count-up";
 
 const EXAMPLES = [
   "I need something that helps decrease malaria in Thailand",
@@ -178,9 +179,11 @@ function AskResult({ outcome, onReset }: { outcome: AskOutcome; onReset: () => v
 function ResultRow({ match }: { match: AskOutcome["matches"][number] }) {
   return (
     <div className="flex items-center gap-4 border border-line bg-surface p-4">
-      <span className="font-mono text-2xl tabular-nums tracking-tight text-ink">
-        {match.finalScore}
-      </span>
+      <CountUp
+        value={match.finalScore}
+        className="font-mono text-2xl tabular-nums tracking-tight text-ink"
+      />
+
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <Link

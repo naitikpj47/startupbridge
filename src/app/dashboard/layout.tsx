@@ -21,8 +21,36 @@ export default async function DashboardLayout({
   const { email } = await requireOfficer();
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="w-56 shrink-0 border-r border-line">
+    <div className="flex min-h-screen flex-col lg:flex-row">
+      {/* Mobile: a compact top bar with horizontally scrolling nav. */}
+      <header className="border-b border-line lg:hidden">
+        <div className="flex items-center justify-between px-5 py-3">
+          <Link href="/dashboard" className="text-sm font-semibold tracking-tight">
+            StartupBridge
+          </Link>
+          <form action={signOut}>
+            <button className="text-xs text-ink-secondary underline-offset-2 hover:text-ink hover:underline">
+              Sign out
+            </button>
+          </form>
+        </div>
+        <nav className="flex gap-1 overflow-x-auto px-3 pb-2">
+          {NAV.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs transition-colors duration-150 hover:bg-well ${
+                item.primary ? "font-medium text-ink" : "text-ink-secondary"
+              }`}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+      </header>
+
+      {/* Desktop: the persistent sidebar. */}
+      <aside className="hidden w-56 shrink-0 border-r border-line lg:block">
         <div className="sticky top-0 flex h-screen flex-col p-5">
           <Link href="/dashboard" className="text-sm font-semibold tracking-tight">
             StartupBridge
@@ -36,9 +64,7 @@ export default async function DashboardLayout({
                 key={item.href}
                 href={item.href}
                 className={`block px-2 py-1.5 text-sm transition-colors duration-150 hover:bg-well hover:text-ink ${
-                  item.primary
-                    ? "font-medium text-ink"
-                    : "text-ink-secondary"
+                  item.primary ? "font-medium text-ink" : "text-ink-secondary"
                 }`}
               >
                 {item.label}
@@ -65,8 +91,11 @@ export default async function DashboardLayout({
           </div>
         </div>
       </aside>
+
       <main className="min-w-0 flex-1">
-        <div className="mx-auto w-full max-w-5xl px-8 py-10">{children}</div>
+        <div className="mx-auto w-full max-w-5xl px-5 py-8 sm:px-8 sm:py-10">
+          {children}
+        </div>
       </main>
     </div>
   );
