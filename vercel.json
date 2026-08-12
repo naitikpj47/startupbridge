@@ -2,7 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "_comment": "Safety net only — the UI calls /api/worker/tick right after enqueueing, so queued work runs immediately. This sweep catches anything left behind (a retry that backed off, a job whose worker died). Hobby plan allows one cron per day; on Pro, */10 * * * * gives a tighter sweep.",
       "path": "/api/worker/tick",
       "schedule": "0 21 * * *"
     }
