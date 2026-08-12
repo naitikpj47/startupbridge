@@ -7,6 +7,7 @@ import {
   enrichStartupFromWebsite,
 } from "@/lib/pipeline";
 import { generateMatchBriefing } from "@/lib/matching/briefing";
+import { runPrefillJob } from "@/lib/prefillJob";
 
 export type JobType =
   | "enrich_startup"
@@ -14,7 +15,8 @@ export type JobType =
   | "embed_startup"
   | "enrich_problem"
   | "embed_problem"
-  | "generate_briefing";
+  | "generate_briefing"
+  | "prefill_url";
 
 export interface Job {
   id: string;
@@ -51,6 +53,8 @@ export async function processJob(sb: SupabaseClient, job: Job): Promise<void> {
       return enrichStartupFromWebsite(sb, job.payload.startup_id);
     case "generate_briefing":
       return generateMatchBriefing(sb, job.payload.match_id);
+    case "prefill_url":
+      return runPrefillJob(sb, job.id, job.payload.url);
     default:
       throw new Error(`Unknown job type: ${job.type as string}`);
   }
@@ -80,12 +84,26 @@ async function writeJobStatus(
  */
 export async function runWorker(
   sb: SupabaseClient,
-  opts: { drain?: boolean; onJob?: (job: Job, ok: boolean, err?: string) => void } = {}
+  opts: {
+    drain?: boolean;
+    /** Stop after this many jobs (bounded ticks); unlimited by default. */
+    maxJobs?: number;
+    /** In drain mode, wait out retry backoffs (default true). Bounded
+     * ticks set false and leave backed-off jobs to the next tick. */
+    waitForBackoff?: boolean;
+    onJob?: (job: Job, ok: boolean, err?: string) => void;
+  } = {}
 ): Promise<{ succeeded: number; failed: number }> {
   let succeeded = 0;
   let failed = 0;
 
   for (;;) {
+    if (
+      opts.maxJobs !== undefined &&
+      succeeded + failed >= opts.maxJobs
+    ) {
+      return { succeeded, failed };
+    }
     const { data, error } = await sb.rpc("claim_next_jobs", { batch_size: 1 });
     if (error) throw new Error(`claim_next_jobs: ${error.message}`);
     const jobs = (data ?? []) as Job[];
@@ -93,6 +111,7 @@ export async function runWorker(
     if (jobs.length === 0) {
       // Nothing claimable right now — but drain mode must not abandon
       // jobs waiting out their retry backoff (run_after in the future).
+      if (opts.waitForBackoff === false) return { succeeded, failed };
       const { data: pending, error: pErr } = await sb
         .from("jobs")
         .select("run_after")

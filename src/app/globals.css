@@ -77,3 +77,15 @@ body {
   outline: 2px solid var(--color-forest);
   outline-offset: 2px;
 }
+
+/* Skeleton shimmer used while enrichment or sourcing is running. */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-well) 25%,
+    #edeae3 37%,
+    var(--color-well) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
