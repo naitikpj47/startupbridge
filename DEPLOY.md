@@ -63,8 +63,15 @@ npx tsx scripts/worker.ts
 
 ## 5. Nightly harvest (GitHub Actions)
 
-`.github/workflows/nightly-harvest.yml` runs at 21:00 UTC (05:00
-Asia/Manila). It needs repository secrets:
+The workflow ships as **`deploy/nightly-harvest.yml`** rather than under
+`.github/workflows/`, because pushing workflow files requires a token
+with the `workflow` scope that the GitHub CLI does not hold by default.
+To enable it, copy the file into `.github/workflows/` — easiest through
+the GitHub web UI (**Add file → Create new file**, name it
+`.github/workflows/nightly-harvest.yml`, paste the contents, commit).
+
+Once in place it runs at 21:00 UTC (05:00 Asia/Manila) and needs these
+repository secrets:
 
 | Secret | Purpose |
 |---|---|
