@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import Anthropic from "@anthropic-ai/sdk";
 import { anthropicClient, anthropicModel, firstText } from "@/lib/ai/claude";
+import { activeSearchProvider, searchWeb } from "@/lib/ai/websearch";
 import { normalizeDomain } from "@/lib/domain";
 import { countryName } from "@/lib/countries";
 
@@ -46,16 +47,84 @@ interface Candidate {
   hq_country: string | null;
 }
 
+const QUERY_SCHEMA = {
+  type: "object",
+  properties: {
+    queries: {
+      type: "array",
+      items: { type: "string" },
+      description: "4 web search queries, each targeting a different angle",
+    },
+  },
+  required: ["queries"],
+  additionalProperties: false,
+} as const;
+
+/**
+ * FAST PATH — used whenever a search API key is configured.
+ *
+ * Three steps, ~10 seconds total:
+ *   1. small model writes 4 search queries (different angles)
+ *   2. all 4 queries fire in PARALLEL against the search API
+ *   3. one model call reads the combined results and names candidates
+ *
+ * The built-in web_search tool does the same work sequentially, with
+ * the model deliberating between searches — better judgement, but it
+ * runs for many minutes. Officers watch this happen, so speed wins.
+ */
+async function researchViaSearchApi(
+  problem: { title: string; country: string | null; sector: string | null; description: string | null },
+  priorityCountries: string
+): Promise<string> {
+  const client = anthropicClient();
+  const where = problem.country ? countryName(problem.country) : "developing regions";
+
+  const queryMsg = await client.messages.create({
+    model: "claude-haiku-4-5",
+    max_tokens: 500,
+    output_config: { format: { type: "json_schema", schema: QUERY_SCHEMA } },
+    messages: [
+      {
+        role: "user",
+        content:
+          `Write 4 web search queries to find STARTUPS with field-proven technology for this problem. ` +
+          `Vary the angle: one plain product search, one with deployment evidence words ` +
+          `("pilot" / "field-tested" / "deployed"), one geographic (${where} or ${priorityCountries || "Asia-Pacific"}), ` +
+          `and one for university spinoffs / technology transfer.\n\n` +
+          `Problem: ${problem.title}\nWhere: ${where}\nSector: ${problem.sector ?? ""}\n` +
+          `${(problem.description ?? "").slice(0, 600)}\n\n` +
+          `Return plain search-engine queries — no operators, no quotes around the whole query.`,
+      },
+    ],
+  });
+  const { queries } = JSON.parse(firstText(queryMsg)) as { queries: string[] };
+
+  const hits = await searchWeb(queries.slice(0, 4));
+  if (!hits.length) throw new Error("search returned no results");
+
+  return hits
+    .slice(0, 40)
+    .map((h) => `${h.title}\n${h.url}\n${h.snippet}`)
+    .join("\n\n");
+}
+
 export async function sourceCandidatesForProblem(
   sb: SupabaseClient,
   problemId: string
 ): Promise<void> {
-  const { data: problem, error } = await sb
+  const { data: problemRow, error } = await sb
     .from("problems")
     .select("id, title, country, sector, description, enriched_brief")
     .eq("id", problemId)
     .single();
-  if (error || !problem) throw new Error(`loading problem: ${error?.message}`);
+  if (error || !problemRow) throw new Error(`loading problem: ${error?.message}`);
+  // Narrowed once here so the nested helpers see a non-null value.
+  const problem = problemRow as {
+    title: string;
+    country: string | null;
+    sector: string | null;
+    description: string | null;
+  };
 
   const { data: run, error: rErr } = await sb
     .from("sourcing_runs")
@@ -77,6 +146,18 @@ export async function sourceCandidatesForProblem(
     const client = anthropicClient();
     const model = anthropicModel();
 
+    // Fast path: with a search API key we run the loop ourselves and
+    // finish in seconds. Without one, fall through to the built-in tool.
+    const provider = activeSearchProvider();
+    let researchText: string;
+    if (provider) {
+      console.log(`[sourcing ${problemId}] searching via ${provider}`);
+      researchText = await researchViaSearchApi(problem, priorityCountries);
+    } else {
+      researchText = await researchViaBuiltInTool();
+    }
+
+    async function researchViaBuiltInTool(): Promise<string> {
     // Step 1 — search the live web. A long server-tool turn can come back
     // with stop_reason "pause_turn"; resume it by replaying the partial
     // assistant turn (bounded, so a stuck search can't loop forever).
@@ -94,26 +175,33 @@ export async function sourceCandidatesForProblem(
       },
     ];
 
+    // Tuned for wall-clock, because an officer is watching a spinner:
+    //  - 3 searches, not 5 (the 4th and 5th mostly re-find the same names)
+    //  - effort "low": this step is retrieval, not deliberation, and high
+    //    effort spends minutes reasoning between searches
+    //  - at most ONE pause_turn resume, so a stuck search fails fast
+    //    instead of tripling the runtime
     let research: Anthropic.Message | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      // Streamed: a multi-search turn runs for minutes and a non-streaming
-      // request times out at the HTTP layer before it finishes.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Streamed: a multi-search turn outlives a normal HTTP request.
       const stream = client.messages.stream(
         {
           model,
-          max_tokens: 4000,
+          max_tokens: 3000,
+          output_config: { effort: "low" },
           tools: [
-            { type: "web_search_20260209", name: "web_search", max_uses: 5 } as Anthropic.Messages.ToolUnion,
+            { type: "web_search_20260209", name: "web_search", max_uses: 3 } as Anthropic.Messages.ToolUnion,
           ],
           system:
             "You research startups with FIELD-PROVEN technology for development " +
             "problems. Deployability is everything: hunt for words like pilot, " +
             "field-tested, deployed, operational. Favor university spinoffs and " +
             "technology-transfer-office portfolios. Report each company with its " +
-            "own website URL and the deployment evidence you found.",
+            "own website URL and the deployment evidence you found. Work quickly: " +
+            "a few well-chosen searches, then report. Do not deliberate at length.",
           messages: searchMessages,
         },
-        { timeout: 15 * 60_000 }
+        { timeout: 5 * 60_000 }
       );
       research = await stream.finalMessage();
       if (research.stop_reason !== "pause_turn") break;
@@ -121,17 +209,18 @@ export async function sourceCandidatesForProblem(
     }
     if (!research) throw new Error("web search produced no response");
 
-    const researchText = research.content
+    const text = research.content
       .filter((b) => b.type === "text")
       .map((b) => (b as Anthropic.TextBlock).text)
       .join("\n");
-    if (!researchText.trim()) {
-      throw new Error("web search returned no usable text");
+    if (!text.trim()) throw new Error("web search returned no usable text");
+    return text;
     }
 
-    // Step 2 — structure the findings.
+    // Step 2 — structure the findings. Pure extraction from text we
+    // already have, so the small model does it in a couple of seconds.
     const extraction = await client.messages.create({
-      model,
+      model: "claude-haiku-4-5",
       max_tokens: 2000,
       output_config: {
         format: { type: "json_schema", schema: CANDIDATE_SCHEMA },
