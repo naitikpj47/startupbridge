@@ -4,11 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   askForHelp,
+  askForFacts,
   sourcingStatus,
   type AskOutcome,
   type AskFailure,
   type AskResult,
 } from "./ask-actions";
+import type { AskFact } from "@/lib/askFacts";
+import { SourcingPanel } from "./sourcing-panel";
 
 /** A "use server" module may only export async functions, so the type
  * guard for its result union lives here. */
@@ -31,12 +34,62 @@ const STEPS = [
   "Scoring candidates",
 ];
 
+/**
+ * The loading screen's other half: context on the problem the officer
+ * just described, revealed one card at a time. Reading beats waiting.
+ */
+function FactCards({ facts }: { facts: AskFact[] }) {
+  const [shown, setShown] = useState(0);
+
+  useEffect(() => {
+    if (!facts.length) return;
+    setShown(1);
+    const timer = setInterval(
+      () => setShown((n) => (n >= facts.length ? n : n + 1)),
+      3500
+    );
+    return () => clearInterval(timer);
+  }, [facts]);
+
+  if (!facts.length) {
+    return (
+      <div className="space-y-3">
+        <p className="text-xs uppercase tracking-wider text-ink-faint">
+          While we work
+        </p>
+        <div className="shimmer h-16 w-full rounded" />
+        <div className="shimmer h-16 w-4/5 rounded" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs uppercase tracking-wider text-ink-faint">
+        While we work — context on this problem
+      </p>
+      {facts.slice(0, shown).map((fact, i) => (
+        <div
+          key={i}
+          className="animate-rise border-l-2 border-forest bg-surface py-2.5 pl-4 pr-3"
+        >
+          <p className="text-[11px] font-medium uppercase tracking-wider text-forest">
+            {fact.label}
+          </p>
+          <p className="mt-1 text-sm leading-relaxed text-ink">{fact.text}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function AskBox() {
   const [ask, setAsk] = useState("");
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState(0);
   const [outcome, setOutcome] = useState<AskOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [facts, setFacts] = useState<AskFact[]>([]);
 
   useEffect(() => {
     if (!busy) return;
@@ -49,6 +102,14 @@ export function AskBox() {
     setOutcome(null);
     setStep(0);
     setBusy(true);
+    setFacts([]);
+    // Fired alongside the real work, never awaited before it: the cards
+    // land in a couple of seconds and fill the wait, but a slow or
+    // failed cards call can't hold up the answer.
+    askForFacts(text)
+      .then((f) => setFacts(f))
+      .catch(() => {});
+
     try {
       const result = await askForHelp(text);
       if (askFailed(result)) setError(result.message);
@@ -99,20 +160,23 @@ export function AskBox() {
       </div>
 
       {busy && (
-        <div className="mt-8 max-w-md space-y-2">
-          {STEPS.map((label, i) => (
-            <div key={label} className="flex items-center gap-3">
-              <span
-                className={`h-1.5 w-1.5 rounded-full transition-colors duration-300 ${
-                  i < step ? "bg-forest" : i === step ? "bg-forest" : "bg-line-strong"
-                }`}
-              />
-              <span className={`text-sm ${i <= step ? "text-ink" : "text-ink-faint"}`}>
-                {label}
-              </span>
-              {i === step && <span className="shimmer h-3 flex-1 rounded" />}
-            </div>
-          ))}
+        <div className="mt-8 grid max-w-4xl grid-cols-1 gap-8 lg:grid-cols-[280px_1fr]">
+          <div className="space-y-2">
+            {STEPS.map((label, i) => (
+              <div key={label} className="flex items-center gap-3">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full transition-colors duration-300 ${
+                    i <= step ? "bg-forest" : "bg-line-strong"
+                  }`}
+                />
+                <span className={`text-sm ${i <= step ? "text-ink" : "text-ink-faint"}`}>
+                  {label}
+                </span>
+                {i === step && <span className="shimmer h-3 flex-1 rounded" />}
+              </div>
+            ))}
+          </div>
+          <FactCards facts={facts} />
         </div>
       )}
 
@@ -218,27 +282,6 @@ function ResultRow({ match }: { match: AskOutcome["matches"][number] }) {
 }
 
 function NoMatches({ outcome }: { outcome: AskOutcome }) {
-  const [status, setStatus] = useState<{ status: string; candidatesFound: number | null; inQueue: number } | null>(null);
-  const polling = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    if (outcome.sourcing !== "started") return;
-    fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
-    polling.current = setInterval(async () => {
-      const s = await sourcingStatus(outcome.problemId);
-      setStatus(s);
-      if (s.status === "completed" || s.status === "failed") {
-        if (polling.current) clearInterval(polling.current);
-      }
-    }, 5000);
-    return () => {
-      if (polling.current) clearInterval(polling.current);
-    };
-  }, [outcome.problemId, outcome.sourcing]);
-
-  const done = status?.status === "completed";
-  const failed = status?.status === "failed";
-
   return (
     <div>
       <div className="border border-line bg-surface px-8 py-10 text-center">
@@ -252,38 +295,10 @@ function NoMatches({ outcome }: { outcome: AskOutcome }) {
           hunting the open web for field-proven candidates.
         </p>
 
-        {outcome.sourcing === "started" && (
-          <div className="mx-auto mt-6 max-w-md">
-            {!done && !failed && (
-              <>
-                <div className="flex items-center justify-center gap-2 text-sm text-forest-deep">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-forest" />
-                  Hunting externally — check back in a few minutes.
-                </div>
-                <div className="mt-4 space-y-2">
-                  <div className="shimmer h-3.5 w-full rounded" />
-                  <div className="shimmer h-3.5 w-4/5 rounded" />
-                </div>
-              </>
-            )}
-            {done && (
-              <p className="text-sm text-forest-deep">
-                Hunt complete — {status?.candidatesFound ?? 0} new candidate
-                {status?.candidatesFound === 1 ? "" : "s"} added to the review
-                queue for vetting.{" "}
-                <Link href="/dashboard/queue" className="underline underline-offset-2">
-                  Review them →
-                </Link>
-              </p>
-            )}
-            {failed && (
-              <p className="text-sm text-err">
-                The external hunt failed. You can re-trigger it from the problem
-                page.
-              </p>
-            )}
-          </div>
-        )}
+        <SourcingPanel
+          problemId={outcome.problemId}
+          autoStarted={outcome.sourcing === "started"}
+        />
       </div>
 
       {outcome.adjacent.length > 0 && (

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireOfficer } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { structureAsk } from "@/lib/ask";
+import { generateAskFacts, type AskFact } from "@/lib/askFacts";
 import { enrichProblem, embedProblem } from "@/lib/pipeline";
 import { runMatching, rankedMatches } from "@/lib/matching/engine";
 
@@ -142,6 +143,21 @@ async function runAsk(ask: string): Promise<AskOutcome> {
     threshold: ranked.threshold,
     sourcing,
   };
+}
+
+/**
+ * Context cards for the loading screen. Called in parallel with
+ * askForHelp, never awaited before it — a failure here must never cost
+ * the officer their answer, so it returns an empty list instead.
+ */
+export async function askForFacts(ask: string): Promise<AskFact[]> {
+  try {
+    await requireOfficer();
+    return await generateAskFacts(ask.trim().slice(0, 2000));
+  } catch (e) {
+    console.error(`[ask-facts] ${e instanceof Error ? e.message : e}`);
+    return [];
+  }
 }
 
 /** Manual re-trigger of the external hunt (spec: auto once, then manual). */

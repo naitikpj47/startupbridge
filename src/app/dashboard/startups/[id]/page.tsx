@@ -6,6 +6,7 @@ import { markClaimed } from "../../actions";
 import { BigScore, ConfidenceChip, StatusChip, FlagList, PageTitle } from "../../bits";
 import type { ReviewFlag } from "@/lib/provenance";
 import { countryNames } from "@/lib/countries";
+import { TractionPanel, type Metrics } from "../metrics";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +43,7 @@ export default async function StartupDetail({
     countries_active: string[] | null;
     sectors: string[] | null;
     sdg_tags: string[] | null;
+    metrics: Metrics | null;
   };
   const s = raw as unknown as {
     id: string;
@@ -97,8 +99,9 @@ export default async function StartupDetail({
         </div>
       </div>
 
-      <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
-        <div className="space-y-6">
+      {/* 1 — The brief: what they do, and what they've actually proven. */}
+      <div className="mt-8 space-y-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_240px]">
           <div className="border border-line bg-surface p-5">
             {s.tagline && <p className="text-sm font-medium text-ink">{s.tagline}</p>}
             <p className="mt-2 text-sm leading-relaxed text-ink-secondary">
@@ -106,22 +109,82 @@ export default async function StartupDetail({
             </p>
             {p?.poc_evidence && (
               <div className="mt-4 border-t border-line pt-3">
-                <p className="text-xs uppercase tracking-wider text-ink-secondary">PoC evidence</p>
+                <p className="text-xs uppercase tracking-wider text-ink-secondary">
+                  Evidence of deployment
+                </p>
                 <p className="mt-1 whitespace-pre-line text-sm text-ink">{p.poc_evidence}</p>
               </div>
             )}
           </div>
 
-          {gate && !gate.eligible && (
-            <div className="border border-warn bg-warn-tint p-4">
-              <p className="text-sm font-medium text-warn">
-                Excluded from matching: {gate.exclusionReasons.join("; ")}
-              </p>
-              <p className="mt-1 text-xs text-warn">{gate.founderCopy}</p>
+          <div className="border border-line bg-surface p-5">
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs uppercase tracking-wider text-ink-secondary">
+                Readiness
+              </span>
+              <ConfidenceChip level={p?.data_confidence ?? null} />
             </div>
-          )}
-          <FlagList flags={flags} />
+            <div className="mt-1"><BigScore value={p?.base_readiness ?? null} /></div>
+            <p className="mt-1 text-xs leading-snug text-ink-faint">
+              Confidence is shown beside the score, never folded into it.
+            </p>
+          </div>
+        </div>
 
+        {gate && !gate.eligible && (
+          <div className="border border-warn bg-warn-tint p-4">
+            <p className="text-sm font-medium text-warn">
+              Excluded from matching: {gate.exclusionReasons.join("; ")}
+            </p>
+            <p className="mt-1 text-xs text-warn">{gate.founderCopy}</p>
+          </div>
+        )}
+        <FlagList flags={flags} />
+
+        {/* 2 — Traction, with room for metrics we can't collect yet. */}
+        <TractionPanel metrics={(p?.metrics ?? {}) as Metrics} />
+
+        {/* 3 — The deployability and profile facts, with provenance. */}
+        <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <div className="border border-line bg-surface p-5">
+            <h2 className="mb-2 text-sm font-semibold text-ink">Deployability</h2>
+            {fact("PoC status", p?.poc_status?.replace(/_/g, " "), "poc_status")}
+            {fact("Infrastructure", p?.infra_intensity?.replace(/_/g, " "), "infra_intensity")}
+            {fact(
+              "Gov experience",
+              p?.gov_experience === null ? "unknown" : p?.gov_experience ? "yes" : "no (confirmed)",
+              "gov_experience"
+            )}
+            {fact("Stage", p?.stage?.replace(/_/g, " "), "stage")}
+          </div>
+          <div className="border border-line bg-surface p-5">
+            <h2 className="mb-2 text-sm font-semibold text-ink">Profile</h2>
+            {fact("HQ", p?.hq_country ? countryNames([p.hq_country])[0] : null, "hq_country")}
+            {fact(
+              "Active in",
+              p?.countries_active?.length ? countryNames(p.countries_active).join(", ") : null,
+              "countries_active"
+            )}
+            {fact("Sectors", p?.sectors?.join(", "), "sectors")}
+            {fact("SDGs", p?.sdg_tags?.join(", "), "sdg_tags")}
+            {fact(
+              "Funding (USD)",
+              p?.funding_raised_usd == null ? "unknown" : Number(p.funding_raised_usd).toLocaleString(),
+              "funding_raised_usd"
+            )}
+            {fact("Team size", p?.team_size, "team_size")}
+          </div>
+        </section>
+
+        {s.contact_email && (
+          <section className="border border-line bg-surface p-5 text-sm">
+            <p className="text-xs uppercase tracking-wider text-ink-secondary">Contact</p>
+            <p className="mt-1 text-ink">{s.contact_name ?? "—"}</p>
+            <p className="text-ink-secondary">{s.contact_email}</p>
+          </section>
+        )}
+
+        <div className="space-y-6">
           {(s.affiliations?.length ?? 0) > 0 && (
             <div className="border border-line bg-surface p-5">
               <h2 className="text-sm font-semibold text-ink">Affiliations</h2>
@@ -143,9 +206,13 @@ export default async function StartupDetail({
             </div>
           )}
 
+          {/* 4 — Matches last: an officer reads the company first, then
+              where it might fit. */}
           {(s.matches?.length ?? 0) > 0 && (
             <div className="border border-line bg-surface p-5">
-              <h2 className="text-sm font-semibold text-ink">Matches</h2>
+              <h2 className="text-sm font-semibold text-ink">
+                Matched against
+              </h2>
               <ul className="mt-2 space-y-1.5">
                 {s.matches!.map((m: { id: string; final_score: number; similarity: number; status: string; problems: { id: string; title: string } | { id: string; title: string }[] }) => {
                   const problem = Array.isArray(m.problems) ? m.problems[0] : m.problems;
@@ -170,42 +237,6 @@ export default async function StartupDetail({
             </div>
           )}
         </div>
-
-        <aside className="space-y-6">
-          <div className="border border-line bg-surface p-5">
-            <div className="flex items-baseline justify-between">
-              <span className="text-xs uppercase tracking-wider text-ink-secondary">
-                Base readiness
-              </span>
-              <ConfidenceChip level={p?.data_confidence ?? null} />
-            </div>
-            <div className="mt-1"><BigScore value={p?.base_readiness ?? null} /></div>
-            <p className="mt-1 text-xs text-ink-faint">
-              Confidence is displayed, never blended into the score.
-            </p>
-          </div>
-
-          <div className="border border-line bg-surface p-5">
-            {fact("PoC status", p?.poc_status?.replace(/_/g, " "), "poc_status")}
-            {fact("Infrastructure", p?.infra_intensity?.replace(/_/g, " "), "infra_intensity")}
-            {fact("Gov experience", p?.gov_experience === null ? "unknown" : p?.gov_experience ? "yes" : "no (confirmed)", "gov_experience")}
-            {fact("Funding (USD)", p?.funding_raised_usd == null ? "unknown" : Number(p.funding_raised_usd).toLocaleString(), "funding_raised_usd")}
-            {fact("Team size", p?.team_size, "team_size")}
-            {fact("Stage", p?.stage?.replace(/_/g, " "), "stage")}
-            {fact("HQ", p?.hq_country ? countryNames([p.hq_country])[0] : null, "hq_country")}
-            {fact("Active in", p?.countries_active?.length ? countryNames(p.countries_active).join(", ") : null, "countries_active")}
-            {fact("Sectors", p?.sectors?.join(", "), "sectors")}
-            {fact("SDGs", p?.sdg_tags?.join(", "), "sdg_tags")}
-          </div>
-
-          {s.contact_email && (
-            <div className="border border-line bg-surface p-5 text-sm">
-              <p className="text-xs uppercase tracking-wider text-ink-secondary">Contact</p>
-              <p className="mt-1 text-ink">{s.contact_name ?? "—"}</p>
-              <p className="text-ink-secondary">{s.contact_email}</p>
-            </div>
-          )}
-        </aside>
       </div>
     </div>
   );

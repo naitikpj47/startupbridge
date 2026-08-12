@@ -3,7 +3,7 @@ import { requireOfficer } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { rankedMatches, type MatchRow } from "@/lib/matching/engine";
 import { saveBrief, closeProblem, runMatchingForProblem } from "../../actions";
-import { sourceExternally } from "../../ask-actions";
+import { SourcingPanel } from "../../sourcing-panel";
 import { StatusChip, PageTitle, EmptyState } from "../../bits";
 import { MatchList, type MatchDisplay } from "./matches-client";
 
@@ -172,11 +172,7 @@ export default async function ProblemDetail({
                   honest. Below are the nearest adjacent candidates, clearly short
                   of the bar.
                 </p>
-                <form action={sourceExternally.bind(null, id)} className="mt-5">
-                  <button className="bg-forest px-5 py-2 text-sm font-medium text-white transition-colors duration-200 hover:bg-forest-deep">
-                    Source externally
-                  </button>
-                </form>
+                <SourcingPanel problemId={id} />
                 {sourcedCount > 0 && (
                   <p className="mt-3 text-xs text-ink-faint">
                     {sourcedCount} candidate{sourcedCount > 1 ? "s" : ""} already
