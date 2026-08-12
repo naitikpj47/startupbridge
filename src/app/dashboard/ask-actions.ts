@@ -28,6 +28,13 @@ export interface AskOutcome {
   sourcing: "not-needed" | "started";
 }
 
+export interface AskFailure {
+  failed: true;
+  message: string;
+}
+
+export type AskResult = AskOutcome | AskFailure;
+
 /**
  * The centerpiece. One sentence in; a structured problem, a drafted
  * brief, an embedding, a scored match run, and — when nothing clears the
@@ -37,7 +44,38 @@ export interface AskOutcome {
  * the brief are two fast Claude calls, embedding is one, matching is
  * local. Only sourcing (slow, web-searching) is queued.
  */
-export async function askForHelp(ask: string): Promise<AskOutcome> {
+export async function askForHelp(ask: string): Promise<AskResult> {
+  try {
+    return await runAsk(ask);
+  } catch (e) {
+    // A thrown Server Action error reaches the browser stripped of its
+    // message (React #441), which tells the officer nothing. Catch it
+    // here and hand back something they can act on, while the real
+    // cause goes to the server log.
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error(`[ask] failed: ${detail}`);
+    return { failed: true, message: friendlyAskError(detail) };
+  }
+}
+
+function friendlyAskError(detail: string): string {
+  const d = detail.toLowerCase();
+  if (d.includes("credit") || d.includes("quota") || d.includes("insufficient")) {
+    return "The AI account is out of credit — top it up and try again.";
+  }
+  if (d.includes("timeout") || d.includes("timed out") || d.includes("aborted")) {
+    return "That took longer than the server allows. Try a shorter, more specific description.";
+  }
+  if (d.includes("rate") && d.includes("limit")) {
+    return "Rate limited by the AI provider — wait a moment and try again.";
+  }
+  if (d.includes("refus")) {
+    return "The model declined to process that phrasing. Try describing the need differently.";
+  }
+  return `Something went wrong: ${detail.slice(0, 200)}`;
+}
+
+async function runAsk(ask: string): Promise<AskOutcome> {
   await requireOfficer();
   const trimmed = ask.trim();
   if (trimmed.length < 8) throw new Error("Tell me a little more about the need.");

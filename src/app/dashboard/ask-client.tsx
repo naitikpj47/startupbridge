@@ -2,7 +2,19 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { askForHelp, sourcingStatus, type AskOutcome } from "./ask-actions";
+import {
+  askForHelp,
+  sourcingStatus,
+  type AskOutcome,
+  type AskFailure,
+  type AskResult,
+} from "./ask-actions";
+
+/** A "use server" module may only export async functions, so the type
+ * guard for its result union lives here. */
+function askFailed(result: AskResult): result is AskFailure {
+  return "failed" in result;
+}
 import { ConfidenceChip } from "./bits";
 import { CountUp } from "./count-up";
 
@@ -38,7 +50,9 @@ export function AskBox() {
     setStep(0);
     setBusy(true);
     try {
-      setOutcome(await askForHelp(text));
+      const result = await askForHelp(text);
+      if (askFailed(result)) setError(result.message);
+      else setOutcome(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
