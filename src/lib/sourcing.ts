@@ -87,12 +87,19 @@ async function researchViaSearchApi(
       {
         role: "user",
         content:
-          `Write 4 web search queries to find STARTUPS with field-proven technology for this problem. ` +
-          `Vary the angle: one plain product search, one with deployment evidence words ` +
-          `("pilot" / "field-tested" / "deployed"), one geographic (${where} or ${priorityCountries || "Asia-Pacific"}), ` +
-          `and one for university spinoffs / technology transfer.\n\n` +
+          `Write 4 web search queries to find VENTURE-BACKED COMPANIES selling technology for this problem.\n\n` +
           `Problem: ${problem.title}\nWhere: ${where}\nSector: ${problem.sector ?? ""}\n` +
           `${(problem.description ?? "").slice(0, 600)}\n\n` +
+          `Vary the angle:\n` +
+          `1. the technology plus a commercial word — startup, company, or venture\n` +
+          `2. funding language — seed round, Series A, raised, investors\n` +
+          `3. geography — ${where} or ${priorityCountries || "Asia-Pacific"} — plus startup\n` +
+          `4. university spinout or technology transfer commercialisation\n\n` +
+          `CRITICAL: these searches must surface COMPANIES, not the charities and ` +
+          `global health institutions that dominate this topic. Never include the ` +
+          `words foundation, NGO, nonprofit, charity, consortium, alliance, network, ` +
+          `initiative, or programme. Prefer words that only companies use: startup, ` +
+          `raised, seed funding, Series A, commercial launch, spinout.\n\n` +
           `Return plain search-engine queries — no operators, no quotes around the whole query.`,
       },
     ],
@@ -217,19 +224,38 @@ export async function sourceCandidatesForProblem(
     return text;
     }
 
-    // Step 2 — structure the findings. Pure extraction from text we
-    // already have, so the small model does it in a couple of seconds.
+    // Step 2 — decide which results are actually companies. This is a
+    // judgement call, not transcription: global-health topics are
+    // dominated by charities and institutions whose pages look exactly
+    // like a company's, so the main model does the filtering.
     const extraction = await client.messages.create({
-      model: "claude-haiku-4-5",
+      model,
       max_tokens: 2000,
       output_config: {
         format: { type: "json_schema", schema: CANDIDATE_SCHEMA },
       },
+      system:
+        "You screen search results for a startup-matching platform. The " +
+        "platform introduces COMPANIES to public-sector problem owners, so a " +
+        "non-company in the list wastes a reviewer's time and embarrasses the " +
+        "team. Screen hard and return few.",
       messages: [
         {
           role: "user",
           content:
-            `From this research, extract the candidate companies. Only include real companies with their OWN website URL (no directories, news sites, or PDFs). Evidence should quote what was actually found.\n\n${researchText}`,
+            `From these search results, list only entries that are COMPANIES — an organisation that sells a product or service and could sign a commercial contract.\n\n` +
+            `INCLUDE: startups, scale-ups, university spinouts, social enterprises that sell something.\n\n` +
+            `EXCLUDE, no matter how relevant the work sounds:\n` +
+            `- charities, foundations, nonprofits, NGOs\n` +
+            `- multilateral bodies, government agencies, ministries\n` +
+            `- research networks, consortia, alliances, initiatives, programmes\n` +
+            `- universities and research institutes themselves (a spinout COMPANY is fine)\n` +
+            `- journals, papers, news articles, directories, funder databases\n\n` +
+            `Test each one: would this organisation invoice a client? If it is funded by donations or grants to deliver aid, it is NOT a company — leave it out.\n\n` +
+            `Also require an entry to have its OWN website (not a news page, PDF, or listing about it).\n\n` +
+            `Returning an empty list is a correct and useful answer when the results are all institutions. Never pad the list.\n\n` +
+            `Evidence must quote what the result actually said — never invent deployment claims.\n\n` +
+            `RESULTS:\n${researchText}`,
         },
       ],
     });
