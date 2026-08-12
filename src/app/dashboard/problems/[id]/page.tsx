@@ -137,6 +137,25 @@ export default async function ProblemDetail({
         </p>
       )}
 
+      {/* Gaps the officer couldn't fill stay visible for the life of the
+          problem — a brief that quietly reads as complete is the failure
+          mode this whole intake exists to prevent. */}
+      {(problem.open_questions?.length ?? 0) > 0 && (
+        <div className="mt-5 max-w-3xl border-l-2 border-warn bg-warn-tint px-4 py-3">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-warn">
+            Open questions — never filled in by the model
+          </p>
+          <ul className="mt-1.5 space-y-1">
+            {(problem.open_questions as string[]).map((q) => (
+              <li key={q} className="flex gap-2 text-sm leading-relaxed text-ink">
+                <span className="text-warn">·</span>
+                {q}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <BriefEditor
         problemId={id}
         brief={problem.enriched_brief}

@@ -3,20 +3,25 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  askForHelp,
+  beginIntake,
+  commitProblem,
   askForFacts,
-  sourcingStatus,
   type AskOutcome,
   type AskFailure,
-  type AskResult,
 } from "./ask-actions";
 import type { AskFact } from "@/lib/askFacts";
+import type {
+  IntakeRead,
+  IntakeAnswer,
+  DraftedProblem,
+} from "@/lib/intake-shared";
+import { IntakeFlow } from "./intake-flow";
 import { SourcingPanel } from "./sourcing-panel";
 
 /** A "use server" module may only export async functions, so the type
- * guard for its result union lives here. */
-function askFailed(result: AskResult): result is AskFailure {
-  return "failed" in result;
+ * guard for its result unions lives here. */
+function failed<T extends object>(r: T | AskFailure): r is AskFailure {
+  return "failed" in r;
 }
 import { ConfidenceChip } from "./bits";
 import { CountUp } from "./count-up";
@@ -28,8 +33,8 @@ const EXAMPLES = [
 ];
 
 const STEPS = [
-  "Reading your ask",
-  "Drafting the problem statement",
+  "Saving the problem statement",
+  "Writing the brief",
   "Searching the pool",
   "Scoring candidates",
 ];
@@ -83,83 +88,102 @@ function FactCards({ facts }: { facts: AskFact[] }) {
   );
 }
 
+type Phase =
+  | { name: "ask" }
+  | { name: "reading" }
+  | { name: "intake"; read: IntakeRead }
+  | { name: "working" }
+  | { name: "done"; outcome: AskOutcome };
+
 export function AskBox() {
   const [ask, setAsk] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<Phase>({ name: "ask" });
   const [step, setStep] = useState(0);
-  const [outcome, setOutcome] = useState<AskOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [facts, setFacts] = useState<AskFact[]>([]);
 
+  const working = phase.name === "working";
   useEffect(() => {
-    if (!busy) return;
-    const timer = setInterval(() => setStep((s) => Math.min(s + 1, STEPS.length - 1)), 4000);
+    if (!working) return;
+    const timer = setInterval(
+      () => setStep((s) => Math.min(s + 1, STEPS.length - 1)),
+      4000
+    );
     return () => clearInterval(timer);
-  }, [busy]);
+  }, [working]);
 
-  async function submit(text: string) {
+  /** Step 1: read the ask and come back with questions. Nothing saved. */
+  async function startIntake(text: string) {
     setError(null);
-    setOutcome(null);
-    setStep(0);
-    setBusy(true);
-    setFacts([]);
-    // Fired alongside the real work, never awaited before it: the cards
-    // land in a couple of seconds and fill the wait, but a slow or
-    // failed cards call can't hold up the answer.
-    askForFacts(text)
-      .then((f) => setFacts(f))
-      .catch(() => {});
-
+    setPhase({ name: "reading" });
     try {
-      const result = await askForHelp(text);
-      if (askFailed(result)) setError(result.message);
-      else setOutcome(result);
+      const read = await beginIntake(text);
+      if (failed(read)) {
+        setError(read.message);
+        setPhase({ name: "ask" });
+      } else {
+        setPhase({ name: "intake", read });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
-      setBusy(false);
+      setPhase({ name: "ask" });
     }
   }
 
-  if (outcome) {
-    return <AskResult outcome={outcome} onReset={() => { setOutcome(null); setAsk(""); }} />;
+  /** Step 3: they signed off on the statement. Save it and go looking. */
+  async function commit(draft: DraftedProblem, answers: IntakeAnswer[]) {
+    setError(null);
+    setStep(0);
+    setFacts([]);
+    setPhase({ name: "working" });
+    // Fired alongside the real work, never awaited before it: the cards
+    // land in a couple of seconds and fill the wait, but a slow or
+    // failed cards call can't hold up the answer.
+    askForFacts(`${draft.title}. ${draft.description}`)
+      .then(setFacts)
+      .catch(() => {});
+
+    try {
+      const result = await commitProblem(draft, answers);
+      if (failed(result)) {
+        setError(result.message);
+        setPhase({ name: "ask" });
+      } else {
+        setPhase({ name: "done", outcome: result });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+      setPhase({ name: "ask" });
+    }
   }
 
-  return (
-    <div className="animate-rise">
-      <h1 className="font-display text-4xl leading-tight tracking-tight text-ink">
-        What do you need?
-      </h1>
-      <p className="mt-3 max-w-xl text-sm leading-relaxed text-ink-secondary">
-        Describe the problem in your own words. We'll write it up, search the
-        pool for field-proven startups, and go hunting externally if nothing
-        measures up.
-      </p>
+  function reset() {
+    setPhase({ name: "ask" });
+    setAsk("");
+    setError(null);
+  }
 
-      <div className="mt-8">
-        <textarea
-          value={ask}
-          onChange={(e) => setAsk(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && ask.trim()) submit(ask);
-          }}
-          disabled={busy}
-          placeholder="I need something that helps decrease malaria in Thailand…"
-          className="min-h-28 w-full border border-line bg-surface px-4 py-3 text-base leading-relaxed text-ink placeholder:text-ink-faint focus:border-forest focus:outline-none disabled:opacity-60"
-        />
-        <div className="mt-3 flex items-center gap-4">
-          <button
-            onClick={() => submit(ask)}
-            disabled={busy || ask.trim().length < 8}
-            className="bg-forest px-6 py-2.5 text-sm font-medium text-white transition-colors duration-200 hover:bg-forest-deep disabled:opacity-50"
-          >
-            {busy ? "Working…" : "Find me someone"}
-          </button>
-          <span className="text-xs text-ink-faint">⌘/Ctrl + Enter</span>
-        </div>
-      </div>
+  if (phase.name === "done") {
+    return <AskResult outcome={phase.outcome} onReset={reset} />;
+  }
 
-      {busy && (
+  if (phase.name === "intake") {
+    return (
+      <IntakeFlow
+        ask={ask}
+        read={phase.read}
+        onCommit={commit}
+        onRestart={reset}
+      />
+    );
+  }
+
+  if (phase.name === "working") {
+    return (
+      <div className="animate-rise">
+        <h1 className="font-display text-3xl leading-tight tracking-tight text-ink">
+          Looking for people who've done this.
+        </h1>
         <div className="mt-8 grid max-w-4xl grid-cols-1 gap-8 lg:grid-cols-[280px_1fr]">
           <div className="space-y-2">
             {STEPS.map((label, i) => (
@@ -178,11 +202,65 @@ export function AskBox() {
           </div>
           <FactCards facts={facts} />
         </div>
+      </div>
+    );
+  }
+
+  const reading = phase.name === "reading";
+
+  return (
+    <div className="animate-rise">
+      <h1 className="font-display text-4xl leading-tight tracking-tight text-ink">
+        What do you need?
+      </h1>
+      <p className="mt-3 max-w-xl text-sm leading-relaxed text-ink-secondary">
+        Describe the problem in your own words — rough is fine. We'll ask a few
+        questions to get it right, write it up in your words, then go looking
+        for startups that have actually done it in the field.
+      </p>
+
+      <div className="mt-8">
+        <textarea
+          value={ask}
+          onChange={(e) => setAsk(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && ask.trim())
+              startIntake(ask);
+          }}
+          disabled={reading}
+          placeholder="I need something that helps decrease malaria in Thailand…"
+          className="min-h-28 w-full border border-line bg-surface px-4 py-3 text-base leading-relaxed text-ink placeholder:text-ink-faint focus:border-forest focus:outline-none disabled:opacity-60"
+        />
+        <div className="mt-3 flex items-center gap-4">
+          <button
+            onClick={() => startIntake(ask)}
+            disabled={reading || ask.trim().length < 8}
+            className="bg-forest px-6 py-2.5 text-sm font-medium text-white transition-colors duration-200 hover:bg-forest-deep disabled:opacity-50"
+          >
+            {reading ? "Reading it…" : "Start"}
+          </button>
+          <span className="text-xs text-ink-faint">⌘/Ctrl + Enter</span>
+        </div>
+      </div>
+
+      {reading && (
+        <div className="mt-8 max-w-md space-y-2.5">
+          <p className="text-xs uppercase tracking-wider text-ink-faint">
+            Working out what to ask you
+          </p>
+          <div className="shimmer h-3 w-full rounded" />
+          <div className="shimmer h-3 w-4/5 rounded" />
+          <div className="shimmer h-3 w-2/3 rounded" />
+        </div>
       )}
 
-      {error && <p className="mt-4 text-sm text-err">{error}</p>}
+      {error && (
+        <p className="mt-4 max-w-xl border-l-2 border-err bg-err-tint px-3 py-2 text-sm text-err">
+          {error}
+        </p>
+      )}
 
-      {!busy && (
+      {!reading && (
         <div className="mt-10">
           <p className="text-xs uppercase tracking-wider text-ink-faint">
             Or try one of these
@@ -191,7 +269,10 @@ export function AskBox() {
             {EXAMPLES.map((example) => (
               <button
                 key={example}
-                onClick={() => { setAsk(example); submit(example); }}
+                onClick={() => {
+                  setAsk(example);
+                  startIntake(example);
+                }}
                 className="block text-left text-sm text-ink-secondary underline-offset-2 transition-colors duration-150 hover:text-forest hover:underline"
               >
                 "{example}"
@@ -224,6 +305,22 @@ function AskResult({ outcome, onReset }: { outcome: AskOutcome; onReset: () => v
       <p className="mt-4 max-w-2xl text-sm leading-relaxed text-ink-secondary">
         {outcome.description}
       </p>
+
+      {outcome.openQuestions.length > 0 && (
+        <div className="mt-5 max-w-2xl border-l-2 border-warn bg-warn-tint px-4 py-3">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-warn">
+            Still open — matched around, not guessed
+          </p>
+          <ul className="mt-1.5 space-y-1">
+            {outcome.openQuestions.map((q) => (
+              <li key={q} className="flex gap-2 text-sm leading-relaxed text-ink">
+                <span className="text-warn">·</span>
+                {q}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="mt-8">
         {hasMatches ? (

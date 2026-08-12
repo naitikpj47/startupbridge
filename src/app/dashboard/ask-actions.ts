@@ -3,10 +3,17 @@
 import { revalidatePath } from "next/cache";
 import { requireOfficer } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { structureAsk } from "@/lib/ask";
 import { generateAskFacts, type AskFact } from "@/lib/askFacts";
 import { enrichProblem, embedProblem } from "@/lib/pipeline";
 import { runMatching, rankedMatches } from "@/lib/matching/engine";
+import { readAsk, draftProblem } from "@/lib/intake";
+import {
+  checkSufficiency,
+  type IntakeRead,
+  type IntakeAnswer,
+  type DraftedProblem,
+  type Sufficiency,
+} from "@/lib/intake-shared";
 
 export interface AskOutcome {
   problemId: string;
@@ -14,6 +21,8 @@ export interface AskOutcome {
   country: string | null;
   sector: string | null;
   description: string;
+  /** Gaps the officer couldn't fill, carried through instead of invented. */
+  openQuestions: string[];
   matches: {
     id: string;
     name: string;
@@ -37,17 +46,73 @@ export interface AskFailure {
 export type AskResult = AskOutcome | AskFailure;
 
 /**
- * The centerpiece. One sentence in; a structured problem, a drafted
- * brief, an embedding, a scored match run, and — when nothing clears the
- * bar — an automatic external hunt, out.
+ * Step 1 — read what they wrote, ask about what they didn't.
  *
- * Runs synchronously because the officer is watching: structuring and
- * the brief are two fast Claude calls, embedding is one, matching is
- * local. Only sourcing (slow, web-searching) is queued.
+ * Nothing is saved and nothing is drafted here. This exists so the
+ * officer's own answers, not a model's assumptions, become the problem
+ * statement.
  */
-export async function askForHelp(ask: string): Promise<AskResult> {
+export async function beginIntake(
+  ask: string
+): Promise<IntakeRead | AskFailure> {
   try {
-    return await runAsk(ask);
+    await requireOfficer();
+    const trimmed = ask.trim();
+    if (trimmed.length < 8) throw new Error("Tell me a little more about the need.");
+    if (trimmed.length > 2000) throw new Error("That's too long — a few sentences is plenty.");
+    return await readAsk(trimmed);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error(`[intake:read] ${detail}`);
+    return { failed: true, message: friendlyAskError(detail) };
+  }
+}
+
+export interface DraftResult {
+  draft: DraftedProblem;
+  sufficiency: Sufficiency;
+}
+
+/**
+ * Step 2 — draft from confirmed answers only, for review.
+ *
+ * Still no database write. The officer sees exactly what will be saved,
+ * including the gaps, and can edit it before anything is committed.
+ */
+export async function draftFromIntake(
+  ask: string,
+  answers: IntakeAnswer[]
+): Promise<DraftResult | AskFailure> {
+  try {
+    await requireOfficer();
+    const sufficiency = checkSufficiency(answers);
+    if (!sufficiency.ok) {
+      // The gate holds server-side too — a client that skipped the
+      // check still can't get a fabricated brief out of us.
+      return { failed: true, message: sufficiency.message };
+    }
+    const draft = await draftProblem(ask.trim().slice(0, 2000), answers);
+    return { draft, sufficiency };
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error(`[intake:draft] ${detail}`);
+    return { failed: true, message: friendlyAskError(detail) };
+  }
+}
+
+/**
+ * Step 3 — the officer signed off. Save, embed, match, and hunt if the
+ * pool comes up short.
+ *
+ * Runs synchronously because they're watching: the brief is one Claude
+ * call, embedding one, matching is local. Only sourcing is queued.
+ */
+export async function commitProblem(
+  draft: DraftedProblem,
+  answers: IntakeAnswer[]
+): Promise<AskResult> {
+  try {
+    return await runAsk(draft, answers);
   } catch (e) {
     // A thrown Server Action error reaches the browser stripped of its
     // message (React #441), which tells the officer nothing. Catch it
@@ -76,26 +141,28 @@ function friendlyAskError(detail: string): string {
   return `Something went wrong: ${detail.slice(0, 200)}`;
 }
 
-async function runAsk(ask: string): Promise<AskOutcome> {
+async function runAsk(
+  draft: DraftedProblem,
+  answers: IntakeAnswer[]
+): Promise<AskOutcome> {
   await requireOfficer();
-  const trimmed = ask.trim();
-  if (trimmed.length < 8) throw new Error("Tell me a little more about the need.");
-  if (trimmed.length > 2000) throw new Error("That's too long — a few sentences is plenty.");
+  const description = draft.description.trim();
+  if (description.length < 20) throw new Error("The problem statement is too short to match on.");
 
   const admin = createSupabaseAdminClient();
-  const structured = await structureAsk(trimmed);
-
   const { data: problem, error } = await admin
     .from("problems")
     .insert({
-      title: structured.title.slice(0, 200),
-      country: structured.country && /^[A-Z]{2}$/i.test(structured.country)
-        ? structured.country.toUpperCase()
-        : null,
-      sector: structured.sector?.toLowerCase() ?? null,
-      sdg_tags: structured.sdg_tags.length ? structured.sdg_tags.slice(0, 3) : null,
-      description: structured.description,
+      title: draft.title.slice(0, 200),
+      country: draft.country,
+      sector: draft.sector,
+      sdg_tags: draft.sdg_tags.length ? draft.sdg_tags : null,
+      description,
       status: "draft",
+      // Provenance: the brief can always be traced back to what a human
+      // actually said, and the gaps stay on the record.
+      intake_answers: answers,
+      open_questions: draft.open_questions.length ? draft.open_questions : null,
     })
     .select("id")
     .single();
@@ -124,20 +191,18 @@ async function runAsk(ask: string): Promise<AskOutcome> {
   // Spec: one automatic sourcing run per problem when nothing clears.
   let sourcing: AskOutcome["sourcing"] = "not-needed";
   if (ranked.matches.length === 0) {
-    await admin.from("jobs").insert({
-      type: "source_candidates",
-      payload: { problem_id: problem.id },
-    });
+    await admin.rpc("request_sourcing", { p_problem_id: problem.id });
     sourcing = "started";
   }
 
   revalidatePath("/dashboard/problems");
   return {
     problemId: problem.id,
-    title: structured.title,
-    country: structured.country,
-    sector: structured.sector,
-    description: structured.description,
+    title: draft.title,
+    country: draft.country,
+    sector: draft.sector,
+    description,
+    openQuestions: draft.open_questions,
     matches: shape(ranked.matches),
     adjacent: shape(ranked.adjacent),
     threshold: ranked.threshold,
@@ -147,7 +212,7 @@ async function runAsk(ask: string): Promise<AskOutcome> {
 
 /**
  * Context cards for the loading screen. Called in parallel with
- * askForHelp, never awaited before it — a failure here must never cost
+ * commitProblem, never awaited before it — a failure here must never cost
  * the officer their answer, so it returns an empty list instead.
  */
 export async function askForFacts(ask: string): Promise<AskFact[]> {
@@ -164,10 +229,13 @@ export async function askForFacts(ask: string): Promise<AskFact[]> {
 export async function sourceExternally(problemId: string) {
   await requireOfficer();
   const admin = createSupabaseAdminClient();
-  await admin.from("jobs").insert({
-    type: "source_candidates",
-    payload: { problem_id: problemId },
+  // Collapses duplicates and moves the request to the front of the
+  // foreground band — the hunt someone just asked for is the one that
+  // runs next.
+  const { error } = await admin.rpc("request_sourcing", {
+    p_problem_id: problemId,
   });
+  if (error) throw new Error(`request_sourcing: ${error.message}`);
   revalidatePath(`/dashboard/problems/${problemId}`);
 }
 
