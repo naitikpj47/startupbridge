@@ -84,7 +84,7 @@ async function databaseChecks(): Promise<Check[]> {
     ];
   }
 
-  const [config, startups, problems, regions, scored, vectors, briefs] =
+  const [config, startups, problems, regions, scored, vectors, briefs, matches, strong] =
     await Promise.all([
       headCount(url, key, "scoring_config"),
       headCount(url, key, "startups"),
@@ -93,6 +93,8 @@ async function databaseChecks(): Promise<Check[]> {
       headCount(url, key, "startup_profiles", "base_readiness=not.is.null"),
       headCount(url, key, "startup_profiles", "embedding=not.is.null"),
       headCount(url, key, "problems", "enriched_brief=not.is.null"),
+      headCount(url, key, "matches"),
+      headCount(url, key, "matches", "similarity=gte.0.5"),
     ]);
 
   const schema: Check =
@@ -134,7 +136,20 @@ async function databaseChecks(): Promise<Check[]> {
           state: vectors === startups && briefs === problems ? "ready" : "attention",
         };
 
-  return [schema, seed, pipeline];
+  const matching: Check =
+    matches === null || matches === 0
+      ? {
+          label: "Matching engine",
+          detail: "No match runs yet",
+          state: "waiting",
+        }
+      : {
+          label: "Matching engine",
+          detail: `${matches} scored pairs · ${strong ?? 0} above threshold`,
+          state: "ready",
+        };
+
+  return [schema, seed, pipeline, matching];
 }
 
 const chipStyles: Record<CheckState, string> = {
@@ -184,7 +199,7 @@ export default async function Home() {
         <div className="mx-auto w-full max-w-6xl px-6 py-24">
           <div className="max-w-2xl animate-rise">
             <p className="text-xs font-medium uppercase tracking-widest text-forest">
-              Phase 2 · Enrichment &amp; embeddings
+              Phase 3 · Matching
             </p>
             <h1 className="mt-4 font-display text-4xl leading-tight tracking-tight text-ink sm:text-5xl">
               Deployable startups, matched to real problem statements.
@@ -222,7 +237,7 @@ export default async function Home() {
       <footer className="border-t border-line">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center px-6">
           <p className="text-xs text-ink-faint">
-            Phase 2 of 8 — enrichment, embeddings, scoring backfill.
+            Phase 3 of 8 — matching engine, gate, threshold, fallback.
           </p>
         </div>
       </footer>

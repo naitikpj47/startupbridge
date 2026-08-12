@@ -6,13 +6,15 @@ import {
   embedProblem,
   enrichStartupFromWebsite,
 } from "@/lib/pipeline";
+import { generateMatchBriefing } from "@/lib/matching/briefing";
 
 export type JobType =
   | "enrich_startup"
   | "recompute_startup"
   | "embed_startup"
   | "enrich_problem"
-  | "embed_problem";
+  | "embed_problem"
+  | "generate_briefing";
 
 export interface Job {
   id: string;
@@ -47,6 +49,8 @@ export async function processJob(sb: SupabaseClient, job: Job): Promise<void> {
       return embedProblem(sb, job.payload.problem_id);
     case "enrich_startup":
       return enrichStartupFromWebsite(sb, job.payload.startup_id);
+    case "generate_briefing":
+      return generateMatchBriefing(sb, job.payload.match_id);
     default:
       throw new Error(`Unknown job type: ${job.type as string}`);
   }
