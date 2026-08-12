@@ -21,6 +21,37 @@ Full product specification: [SPEC.md](./SPEC.md).
 
 Secrets live only in `.env.local`, which is gitignored. Never commit keys.
 
+## Surfaces
+
+| Route | Who | What |
+|---|---|---|
+| `/` | public | Landing page, one CTA |
+| `/submit` | public | Smart intake (URL pre-fill) and claim flow |
+| `/signin` | team | Password sign-in |
+| `/dashboard` | team | **Ask** — describe a need, get matched startups |
+| `/dashboard/queue` | team | Review queue |
+| `/dashboard/startups` | team | Directory and profiles |
+| `/dashboard/problems` | team | Problem statements, matches, briefings, outreach |
+| `/dashboard/config` | team | Scoring weights and threshold |
+| `/dashboard/import` | team | CSV import |
+| `/status` | team-ish | Build/pipeline status |
+
+## Operations
+
+```bash
+npx tsx scripts/worker.ts            # drain the job queue once
+npx tsx scripts/worker.ts --watch    # keep draining
+npx tsx scripts/create-officer.ts    # create/reset officer accounts
+npx tsx scripts/test-scoring.ts      # readiness scoring vs hand-computed
+npx tsx scripts/test-matching.ts     # gate + match math
+npx tsx scripts/calibrate-matching.ts # similarity matrix vs threshold
+python scrapers/nightly.py           # the nightly harvest (needs env vars)
+```
+
+Long AI work (enrichment, embeddings, briefings, sourcing) runs as queued
+jobs, never inside a web request. `POST /api/worker/tick` drains a few
+jobs and is what the UI calls after enqueueing.
+
 ## Conventions
 
 - No real organization is ever named in code, UI, copy, or comments —

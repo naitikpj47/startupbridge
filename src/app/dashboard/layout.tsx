@@ -5,10 +5,10 @@ import { signOut } from "./actions";
 export const dynamic = "force-dynamic";
 
 const NAV = [
-  { href: "/dashboard", label: "Overview" },
+  { href: "/dashboard", label: "Ask", primary: true },
+  { href: "/dashboard/problems", label: "Past asks" },
   { href: "/dashboard/queue", label: "Review queue" },
   { href: "/dashboard/startups", label: "Startups" },
-  { href: "/dashboard/problems", label: "Problems" },
   { href: "/dashboard/config", label: "Scoring config" },
   { href: "/dashboard/import", label: "CSV import" },
 ];
@@ -35,7 +35,11 @@ export default async function DashboardLayout({
               <Link
                 key={item.href}
                 href={item.href}
-                className="block px-2 py-1.5 text-sm text-ink-secondary transition-colors duration-150 hover:bg-well hover:text-ink"
+                className={`block px-2 py-1.5 text-sm transition-colors duration-150 hover:bg-well hover:text-ink ${
+                  item.primary
+                    ? "font-medium text-ink"
+                    : "text-ink-secondary"
+                }`}
               >
                 {item.label}
               </Link>

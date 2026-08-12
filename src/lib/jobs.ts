@@ -8,6 +8,7 @@ import {
 } from "@/lib/pipeline";
 import { generateMatchBriefing } from "@/lib/matching/briefing";
 import { runPrefillJob } from "@/lib/prefillJob";
+import { sourceCandidatesForProblem } from "@/lib/sourcing";
 
 export type JobType =
   | "enrich_startup"
@@ -16,7 +17,8 @@ export type JobType =
   | "enrich_problem"
   | "embed_problem"
   | "generate_briefing"
-  | "prefill_url";
+  | "prefill_url"
+  | "source_candidates";
 
 export interface Job {
   id: string;
@@ -55,6 +57,8 @@ export async function processJob(sb: SupabaseClient, job: Job): Promise<void> {
       return generateMatchBriefing(sb, job.payload.match_id);
     case "prefill_url":
       return runPrefillJob(sb, job.id, job.payload.url);
+    case "source_candidates":
+      return sourceCandidatesForProblem(sb, job.payload.problem_id);
     default:
       throw new Error(`Unknown job type: ${job.type as string}`);
   }

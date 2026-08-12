@@ -3,6 +3,7 @@ import { requireOfficer } from "@/lib/server/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { rankedMatches, type MatchRow } from "@/lib/matching/engine";
 import { saveBrief, closeProblem, runMatchingForProblem } from "../../actions";
+import { sourceExternally } from "../../ask-actions";
 import { StatusChip, PageTitle, EmptyState } from "../../bits";
 import { MatchList, type MatchDisplay } from "./matches-client";
 
@@ -35,6 +36,12 @@ export default async function ProblemDetail({
   if (hasEmbedding) {
     ranked = await rankedMatches(admin, id);
   }
+
+  const { count: sourcedCountRaw } = await sb
+    .from("startups")
+    .select("*", { count: "exact", head: true })
+    .eq("sourced_for", id);
+  const sourcedCount = sourcedCountRaw ?? 0;
 
   const allRows = [...ranked.matches, ...ranked.adjacent];
   const ids = allRows.map((m) => m.id);
@@ -163,8 +170,19 @@ export default async function ProblemDetail({
                   Nothing in the approved pool clears the {ranked.threshold.toFixed(2)}{" "}
                   similarity bar for this problem — that's worth knowing, and it's
                   honest. Below are the nearest adjacent candidates, clearly short
-                  of the bar. Demand-driven sourcing arrives in Phase 6.
+                  of the bar.
                 </p>
+                <form action={sourceExternally.bind(null, id)} className="mt-5">
+                  <button className="bg-forest px-5 py-2 text-sm font-medium text-white transition-colors duration-200 hover:bg-forest-deep">
+                    Source externally
+                  </button>
+                </form>
+                {sourcedCount > 0 && (
+                  <p className="mt-3 text-xs text-ink-faint">
+                    {sourcedCount} candidate{sourcedCount > 1 ? "s" : ""} already
+                    sourced for this problem — see the review queue.
+                  </p>
+                )}
               </div>
             )}
             <div className="mt-4">

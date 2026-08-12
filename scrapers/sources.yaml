@@ -1,0 +1,47 @@
+# Discovery sources for the nightly pass. Each entry is a public page
+# listing organizations — accelerator cohorts, grantee lists, university
+# technology-transfer portfolios. The scraper extracts outbound links to
+# company websites, normalizes them to bare domains, and files new ones
+# in the review queue.
+#
+# Keep this list small and high-signal: precision beats volume, because
+# every new domain costs a reviewer's attention.
+#
+# Add entries as:
+#   - name: human label for the run log
+#     url: the listing page
+#     kind: accelerator_cohort | grantee_list | tto_portfolio
+#     enabled: true|false
+
+sources:
+  - name: Example accelerator cohort page
+    url: https://example.com/cohort
+    kind: accelerator_cohort
+    enabled: false
+
+  - name: Example grantee list
+    url: https://example.com/grantees
+    kind: grantee_list
+    enabled: false
+
+  - name: Example university TTO portfolio
+    url: https://example.com/tto/portfolio
+    kind: tto_portfolio
+    enabled: false
+
+# Domains never to file, whatever a listing page links to.
+ignore_domains:
+  - twitter.com
+  - x.com
+  - linkedin.com
+  - facebook.com
+  - instagram.com
+  - youtube.com
+  - medium.com
+  - github.com
+  - crunchbase.com
+  - wikipedia.org
+  - google.com
+  - forms.gle
+  - eventbrite.com
+  - mailchi.mp
