@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { sourceExternally, sourcingStatus } from "./ask-actions";
+import { HuntFindings } from "./hunt-findings";
 
 /**
  * Trigger and progress for the external hunt, shared by the Ask screen
@@ -54,14 +54,10 @@ export function SourcingPanel({
       setStatus(s);
 
       if (s.status === "completed" || s.status === "failed") {
+        // Hand off: the findings list owns polling from here, because
+        // analysis is now something the officer opts into per candidate
+        // rather than something running behind their back.
         setRunning(false);
-        // The hunt is done, but the candidates it found are still being
-        // profiled in the background. Keep nudging the worker so those
-        // finish while the officer reads, then stop.
-        if (s.profiling > 0 && Date.now() - startedAt < 6 * 60_000) {
-          kick();
-          return;
-        }
         stop();
         return;
       }
@@ -97,19 +93,12 @@ export function SourcingPanel({
 
   if (done) {
     return (
-      <div className="mt-5 text-sm text-forest-deep">
-        Hunt complete — {status?.candidatesFound ?? 0} new candidate
-        {status?.candidatesFound === 1 ? "" : "s"} added to the review queue for
-        vetting.{" "}
-        <Link href="/dashboard/queue" className="underline underline-offset-2">
-          Review them →
-        </Link>
-        {(status?.profiling ?? 0) > 0 && (
-          <span className="mt-1 block text-xs text-ink-faint">
-            Filling in their profiles in the background — you can review them
-            now; details will appear as they land.
-          </span>
-        )}
+      <div className="mt-5">
+        <p className="text-sm text-forest-deep">
+          Hunt complete — {status?.candidatesFound ?? 0} candidate
+          {status?.candidatesFound === 1 ? "" : "s"} found.
+        </p>
+        <HuntFindings problemId={problemId} live />
       </div>
     );
   }
@@ -149,16 +138,10 @@ export function SourcingPanel({
             : "The last hunt failed."}
         </p>
       )}
-      {(status?.inQueue ?? 0) > 0 && (
-        <p className="mt-2 text-xs text-ink-faint">
-          {status!.inQueue} candidate{status!.inQueue > 1 ? "s" : ""} already
-          sourced for this problem —{" "}
-          <Link href="/dashboard/queue" className="underline underline-offset-2">
-            see the review queue
-          </Link>
-          .
-        </p>
-      )}
+      {/* Anything a previous hunt found for this problem stays on the
+          problem, pickable, rather than being posted off to the global
+          queue and forgotten. */}
+      <HuntFindings problemId={problemId} />
     </div>
   );
 }

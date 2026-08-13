@@ -37,12 +37,6 @@ export default async function ProblemDetail({
     ranked = await rankedMatches(admin, id);
   }
 
-  const { count: sourcedCountRaw } = await sb
-    .from("startups")
-    .select("*", { count: "exact", head: true })
-    .eq("sourced_for", id);
-  const sourcedCount = sourcedCountRaw ?? 0;
-
   const allRows = [...ranked.matches, ...ranked.adjacent];
   const ids = allRows.map((m) => m.id);
   const { data: details } = ids.length
@@ -191,13 +185,10 @@ export default async function ProblemDetail({
                   honest. Below are the nearest adjacent candidates, clearly short
                   of the bar.
                 </p>
+                {/* The panel now renders the findings themselves, so the
+                    officer picks from what was found for THIS problem
+                    instead of being sent to the global review queue. */}
                 <SourcingPanel problemId={id} />
-                {sourcedCount > 0 && (
-                  <p className="mt-3 text-xs text-ink-faint">
-                    {sourcedCount} candidate{sourcedCount > 1 ? "s" : ""} already
-                    sourced for this problem — see the review queue.
-                  </p>
-                )}
               </div>
             )}
             <div className="mt-4">
