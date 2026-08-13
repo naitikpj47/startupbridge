@@ -2,6 +2,7 @@ import { anthropicClient, anthropicModel, firstText } from "@/lib/ai/claude";
 import {
   DIMENSIONS,
   LABEL,
+  unansweredDimensions,
   type DimensionKey,
   type DraftedProblem,
   type IntakeAnswer,
@@ -160,12 +161,18 @@ export async function readAsk(ask: string): Promise<IntakeRead> {
       d?.quote && ask.toLowerCase().includes(d.quote.toLowerCase().trim())
         ? d.quote
         : null;
+    // Only the quote is verifiable, so only the quote is trusted. The
+    // model's `captured` restatement passes no test — it can widen
+    // "malaria in Thailand" into "malaria among migrant workers in
+    // border provinces" and, being pre-selected, that would enter the
+    // record as something the officer said. The verified substring of
+    // their own message is what gets pre-filled.
     return {
       key,
       question: d?.question ?? `Anything to add about ${key}?`,
       why: d?.why ?? "",
       options: (d?.options ?? []).slice(0, 5),
-      captured: quoted ? (d?.captured ?? null) : null,
+      captured: quoted,
       quote: quoted,
     };
   });
@@ -232,18 +239,13 @@ export async function draftProblem(
   ask: string,
   answers: IntakeAnswer[]
 ): Promise<DraftedProblem> {
-  const confirmed = answers.filter((a) => !a.unknown && a.value.trim());
-  const unknown = answers.filter((a) => a.unknown);
+  const unanswered = new Set(unansweredDimensions(answers));
+  const confirmed = answers.filter((a) => !unanswered.has(a.key));
 
   const facts = confirmed
     .map((a) => `- ${LABEL[a.key]}: ${a.value.trim()}`)
     .join("\n");
-  const gaps = [
-    ...unknown.map((a) => LABEL[a.key]),
-    ...DIMENSIONS.map((d) => d.key).filter(
-      (k) => !answers.some((a) => a.key === k)
-    ).map((k) => LABEL[k]),
-  ];
+  const gaps = [...unanswered].map((k) => LABEL[k]);
 
   const message = await anthropicClient().messages.create({
     model: anthropicModel(),
@@ -273,9 +275,9 @@ export async function draftProblem(
           `The officer's original words:\n"${ask}"\n\n` +
           `Confirmed in conversation:\n${facts || "- (nothing beyond the original words)"}\n\n` +
           (gaps.length
-            ? `Explicitly NOT known — the officer was asked and could not say. ` +
+            ? `NOT established — the officer was asked and did not answer. ` +
               `Do not fill these in:\n${gaps.map((g) => `- ${g}`).join("\n")}\n\n`
-            : "Nothing is missing.\n\n") +
+            : "Every dimension was answered; nothing is missing.\n\n") +
           `Write the problem statement.`,
       },
     ],

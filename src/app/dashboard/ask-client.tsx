@@ -93,6 +93,10 @@ type Phase =
   | { name: "reading" }
   | { name: "intake"; read: IntakeRead }
   | { name: "working" }
+  // A failed commit must never cost the officer the statement they just
+  // spent six questions building. The draft and their answers are held
+  // here so the retry is one click and costs nothing to re-derive.
+  | { name: "stuck"; draft: DraftedProblem; answers: IntakeAnswer[]; message: string }
   | { name: "done"; outcome: AskOutcome };
 
 export function AskBox() {
@@ -146,14 +150,17 @@ export function AskBox() {
     try {
       const result = await commitProblem(draft, answers);
       if (failed(result)) {
-        setError(result.message);
-        setPhase({ name: "ask" });
+        setPhase({ name: "stuck", draft, answers, message: result.message });
       } else {
         setPhase({ name: "done", outcome: result });
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-      setPhase({ name: "ask" });
+      setPhase({
+        name: "stuck",
+        draft,
+        answers,
+        message: e instanceof Error ? e.message : "Something went wrong.",
+      });
     }
   }
 
@@ -175,6 +182,42 @@ export function AskBox() {
         onCommit={commit}
         onRestart={reset}
       />
+    );
+  }
+
+  if (phase.name === "stuck") {
+    const { draft, answers, message } = phase;
+    return (
+      <div className="animate-rise max-w-2xl">
+        <h1 className="font-display text-2xl leading-tight tracking-tight text-ink">
+          Your statement is safe — saving it failed.
+        </h1>
+        <p className="mt-2 border-l-2 border-err bg-err-tint px-3 py-2 text-sm text-err">
+          {message}
+        </p>
+        <div className="mt-5 border border-line bg-surface p-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+            {draft.title}
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-ink-secondary">
+            {draft.description}
+          </p>
+        </div>
+        <div className="mt-5 flex flex-wrap items-center gap-4">
+          <button
+            onClick={() => commit(draft, answers)}
+            className="bg-forest px-5 py-2.5 text-sm font-medium text-white hover:bg-forest-deep"
+          >
+            Try saving again
+          </button>
+          <button
+            onClick={reset}
+            className="text-sm text-ink-secondary underline-offset-2 hover:text-ink hover:underline"
+          >
+            Start over
+          </button>
+        </div>
+      </div>
     );
   }
 

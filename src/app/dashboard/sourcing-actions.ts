@@ -29,10 +29,12 @@ export interface Finding {
   /** Why the hunt picked them — the deployment evidence it found. */
   evidence: string | null;
   status: string;
-  /** Deep analysis has run: profile filled, readiness scored, embedded. */
+  /** The analysis chain has run to completion for this candidate. */
   analysed: boolean;
   /** Analysis is queued or running right now. */
   pending: boolean;
+  /** Analysis was attempted and gave up. Reason is human-readable. */
+  failed: string | null;
   readiness: number | null;
   confidence: string | null;
   pocStatus: string | null;
@@ -60,7 +62,7 @@ export async function huntFindings(problemId: string): Promise<FindingsView> {
     .select(
       "id, name, domain, website, status, created_at, " +
         "startup_profiles(base_readiness, data_confidence, poc_evidence, " +
-        "hq_country, poc_status, infra_intensity, sectors)"
+        "hq_country, poc_status, infra_intensity, sectors, profile_text)"
     )
     .eq("sourced_for", problemId)
     .neq("status", "rejected")
@@ -85,18 +87,29 @@ export async function huntFindings(problemId: string): Promise<FindingsView> {
     return { findings: [], threshold: config.similarityThreshold, analysing: 0 };
   }
 
-  // Which of these are mid-analysis. Payload is jsonb, so filter in JS
-  // rather than build an `or` of jsonb path predicates.
+  // Analysis jobs for these candidates. Payload is jsonb, so filter in
+  // JS rather than build an `or` of jsonb path predicates. Failures are
+  // fetched too: a candidate whose site blocks the fetcher must say so,
+  // not quietly revert to looking like it was never analysed. Roughly
+  // two in five sourced domains are unreachable in practice.
   const { data: jobRows } = await admin
     .from("jobs")
-    .select("payload")
+    .select("payload, status, error, created_at")
     .eq("type", "enrich_startup")
-    .in("status", ["queued", "running"]);
-  const inFlight = new Set(
-    (jobRows ?? [])
-      .map((j) => (j.payload as { startup_id?: string })?.startup_id)
-      .filter((v): v is string => typeof v === "string")
-  );
+    .in("status", ["queued", "running", "failed"])
+    .order("created_at", { ascending: false });
+  const inFlight = new Set<string>();
+  const lastFailure = new Map<string, string>();
+  for (const j of jobRows ?? []) {
+    const sid = (j.payload as { startup_id?: string })?.startup_id;
+    if (typeof sid !== "string") continue;
+    if (j.status === "failed") {
+      // Rows are newest-first, so the first failure seen is the latest.
+      if (!lastFailure.has(sid)) lastFailure.set(sid, j.error ?? "unknown error");
+    } else {
+      inFlight.add(sid);
+    }
+  }
 
   // Similarity is only meaningful once a candidate has an embedding,
   // which analysis writes. Unanalysed rows simply come back absent.
@@ -124,8 +137,19 @@ export async function huntFindings(problemId: string): Promise<FindingsView> {
           poc_status: string | null;
           infra_intensity: string | null;
           sectors: string[] | null;
+          profile_text: string | null;
         }
       | null;
+    // Completion, not score. base_readiness is NULL whenever none of the
+    // six readiness signals is known — and website enrichment writes
+    // none of them, so a candidate that was fully and successfully
+    // analysed still scores NULL. Keying "analysed" off it meant the
+    // rows reverted to unticked checkboxes after a paid run and could be
+    // paid for again, forever. profile_text is written by
+    // recomputeStartup at the end of the chain, so it marks the work as
+    // actually done. Readiness stays NULL and is displayed as "—",
+    // which is the honest answer.
+    const analysed = Boolean(p?.profile_text);
     return {
       id: r.id,
       name: r.name,
@@ -134,8 +158,9 @@ export async function huntFindings(problemId: string): Promise<FindingsView> {
       hqCountry: p?.hq_country ?? null,
       evidence: p?.poc_evidence ?? null,
       status: r.status,
-      analysed: p?.base_readiness != null,
+      analysed,
       pending: inFlight.has(r.id),
+      failed: analysed || inFlight.has(r.id) ? null : (lastFailure.get(r.id) ?? null),
       readiness: p?.base_readiness ?? null,
       confidence: p?.data_confidence ?? null,
       pocStatus: p?.poc_status ?? null,

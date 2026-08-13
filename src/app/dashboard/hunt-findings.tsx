@@ -42,19 +42,37 @@ export function HuntFindings({
     timer.current = null;
   }, []);
 
-  const load = useCallback(async () => {
+  /**
+   * Returns the number still being analysed, or null if the call itself
+   * failed. The distinction matters: a transient failure read as "zero
+   * left" would stop the poller AND the worker nudges that make queued
+   * jobs actually run, stranding every row on its spinner until a
+   * reload.
+   */
+  const load = useCallback(async (): Promise<number | null> => {
     try {
       const view = await huntFindings(problemId);
       setFindings(view.findings);
       setThreshold(view.threshold);
+      setError(null);
+      // Drop anything no longer offerable — a candidate dismissed or
+      // already analysed must leave the selection, or the next click
+      // pays for a company the officer just rejected.
+      const selectable = new Set(
+        view.findings.filter((f) => !f.analysed && !f.pending).map((f) => f.id)
+      );
+      setPicked((p) => {
+        const next = new Set([...p].filter((id) => selectable.has(id)));
+        return next.size === p.size ? p : next;
+      });
       return view.analysing;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load the findings.");
-      return 0;
+      return null;
     }
   }, [problemId]);
 
-  /** Poll only while analysis is actually in flight, then stop. */
+  /** Poll while analysis is in flight. Transient failures keep watching. */
   const watch = useCallback(() => {
     stop();
     const startedAt = Date.now();
@@ -63,17 +81,21 @@ export function HuntFindings({
     kick();
     timer.current = setInterval(async () => {
       const analysing = await load();
-      if (analysing === 0 || Date.now() - startedAt > 5 * 60_000) {
+      if (Date.now() - startedAt > 5 * 60_000) {
         stop();
         return;
       }
-      kick();
+      if (analysing === 0) {
+        stop();
+        return;
+      }
+      kick(); // covers analysing === null: keep nudging, keep watching
     }, 4000);
   }, [load, stop]);
 
   useEffect(() => {
     load().then((analysing) => {
-      if (analysing > 0 || live) watch();
+      if ((analysing ?? 0) > 0 || live) watch();
     });
     return stop;
   }, [load, watch, stop, live]);
@@ -102,6 +124,27 @@ export function HuntFindings({
     } catch (e) {
       setError(e instanceof Error ? e.message : "That didn't work.");
     }
+  }
+
+  // Error before the loading check, not after it: a first load that
+  // throws leaves findings null forever, and an error banner placed
+  // below this early return can never be reached.
+  if (error && findings === null) {
+    return (
+      <div className="mt-5 border-l-2 border-err bg-err-tint px-4 py-3">
+        <p className="text-sm text-err">Couldn&apos;t load what the hunt found.</p>
+        <p className="mt-1 text-xs text-ink-secondary">{error}</p>
+        <button
+          onClick={() => {
+            setError(null);
+            load();
+          }}
+          className="mt-2 text-sm text-forest underline underline-offset-2"
+        >
+          Try again
+        </button>
+      </div>
+    );
   }
 
   if (findings === null) {
@@ -266,6 +309,19 @@ function FindingRow({
             <p className="mt-2 flex items-center gap-2 text-xs text-forest-deep">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-forest" />
               Reading their site and scoring them…
+            </p>
+          )}
+
+          {/* A candidate whose site can't be reached must say so. Left
+              silent, the row simply reverts to an unticked checkbox and
+              the officer re-pays to watch nothing happen again. */}
+          {f.failed && (
+            <p className="mt-2 text-xs text-warn">
+              Couldn&apos;t analyse this one —{" "}
+              {f.failed.toLowerCase().includes("fetch")
+                ? "their site didn't respond."
+                : f.failed}{" "}
+              You can still open it and judge from the evidence above.
             </p>
           )}
 

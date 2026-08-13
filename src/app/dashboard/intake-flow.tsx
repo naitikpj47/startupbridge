@@ -56,7 +56,14 @@ export function IntakeFlow({
   const [at, setAt] = useState(0);
   const [drafting, setDrafting] = useState(false);
   const [result, setResult] = useState<DraftResult | null>(null);
+  const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Edits live here, not inside DraftReview: going back to fix one
+  // answer used to unmount the review and silently bin a rewritten
+  // statement the officer may have spent real time on.
+  const [edited, setEdited] = useState<{ title: string; description: string } | null>(
+    null
+  );
 
   const answers: IntakeAnswer[] = useMemo(
     () =>
@@ -90,7 +97,11 @@ export function IntakeFlow({
     try {
       const r = await draftFromIntake(ask, answers);
       if ("failed" in r) setError(r.message);
-      else setResult(r);
+      else {
+        setResult(r);
+        setEdited({ title: r.draft.title, description: r.draft.description });
+        setReviewing(true);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -98,12 +109,23 @@ export function IntakeFlow({
     }
   }
 
-  if (result) {
+  if (result && reviewing) {
     return (
       <DraftReview
         result={result}
-        onBack={() => setResult(null)}
-        onConfirm={(edited) => onCommit(edited, answers)}
+        edited={edited ?? { title: result.draft.title, description: result.draft.description }}
+        onEdit={setEdited}
+        onBack={() => setReviewing(false)}
+        onConfirm={() =>
+          onCommit(
+            {
+              ...result.draft,
+              title: edited?.title ?? result.draft.title,
+              description: edited?.description ?? result.draft.description,
+            },
+            answers
+          )
+        }
       />
     );
   }
@@ -112,12 +134,25 @@ export function IntakeFlow({
 
   return (
     <div className="animate-rise">
-      <button
-        onClick={onRestart}
-        className="text-xs text-ink-secondary underline-offset-2 hover:text-ink hover:underline"
-      >
-        ← Start over
-      </button>
+      <div className="flex flex-wrap items-center gap-4">
+        <button
+          onClick={onRestart}
+          className="text-xs text-ink-secondary underline-offset-2 hover:text-ink hover:underline"
+        >
+          ← Start over
+        </button>
+        {/* A statement already written stays one click away, unchanged.
+            Without this the only route back to it was "Re-write it",
+            which spends a call and replaces the officer's own edits. */}
+        {result && (
+          <button
+            onClick={() => setReviewing(true)}
+            className="text-xs text-forest underline underline-offset-2"
+          >
+            Back to your statement, as you left it →
+          </button>
+        )}
+      </div>
 
       <div className="mt-4 border-l-2 border-forest bg-forest-tint/50 py-3 pl-4 pr-4">
         <p className="text-[11px] font-medium uppercase tracking-wider text-forest">
@@ -236,7 +271,13 @@ export function IntakeFlow({
                 disabled={drafting}
                 className="bg-forest px-5 py-2 text-sm font-medium text-white transition-colors duration-200 hover:bg-forest-deep disabled:opacity-50"
               >
-                {last ? (drafting ? "Writing it up…" : "Write it up") : "Next →"}
+                {last
+                  ? drafting
+                    ? "Writing it up…"
+                    : result
+                      ? "Re-write it"
+                      : "Write it up"
+                  : "Next →"}
               </button>
               <button
                 onClick={() => {
@@ -378,15 +419,20 @@ function Rail({
  */
 function DraftReview({
   result,
+  edited,
+  onEdit,
   onBack,
   onConfirm,
 }: {
   result: DraftResult;
+  edited: { title: string; description: string };
+  onEdit: (v: { title: string; description: string }) => void;
   onBack: () => void;
-  onConfirm: (draft: DraftedProblem) => void;
+  onConfirm: () => void;
 }) {
-  const [title, setTitle] = useState(result.draft.title);
-  const [description, setDescription] = useState(result.draft.description);
+  const { title, description } = edited;
+  const setTitle = (v: string) => onEdit({ title: v, description });
+  const setDescription = (v: string) => onEdit({ title, description: v });
   const gaps = result.draft.open_questions;
 
   return (
@@ -442,7 +488,7 @@ function DraftReview({
 
       <div className="mt-7 flex flex-wrap items-center gap-4 border-t border-line pt-5">
         <button
-          onClick={() => onConfirm({ ...result.draft, title, description })}
+          onClick={onConfirm}
           disabled={title.trim().length < 4 || description.trim().length < 20}
           className="bg-forest px-6 py-2.5 text-sm font-medium text-white transition-colors duration-200 hover:bg-forest-deep disabled:opacity-50"
         >

@@ -116,14 +116,39 @@ const REQUIRED: DimensionKey[] = ["problem", "where"];
 const NEED_ONE_OF: DimensionKey[] = ["who", "today", "constraints", "success"];
 
 /**
+ * Every dimension the officer did not actually answer.
+ *
+ * Three states collapse to one here, and that is the point: declared
+ * unknown, left blank by pressing Next, and absent from the array
+ * entirely are all "not established". Counting only declared unknowns
+ * let skipped questions disappear from the draft prompt, which then
+ * read "Nothing is missing" about things nobody had said a word on.
+ */
+export function unansweredDimensions(answers: IntakeAnswer[]): DimensionKey[] {
+  const byKey = new Map(answers.map((a) => [a.key, a]));
+  return DIMENSIONS.map((d) => d.key).filter((k) => {
+    const a = byKey.get(k);
+    return !a || a.unknown || a.value.trim().length < MIN_ANSWER;
+  });
+}
+
+/**
  * The gate. Deterministic on purpose: a model asked "is this enough?"
  * will say yes under mild pressure, and this is the one decision that
  * must not be negotiable.
  */
+/**
+ * Two characters, not three: the gate's job is to block emptiness, not to
+ * judge quality. "UK" is a real answer to where, and refusing it because
+ * it is short is a bug the officer cannot argue with. A junk two-letter
+ * answer only shortchanges the person who typed it.
+ */
+const MIN_ANSWER = 2;
+
 export function checkSufficiency(answers: IntakeAnswer[]): Sufficiency {
   const filled = new Set(
     answers
-      .filter((a) => !a.unknown && a.value.trim().length >= 3)
+      .filter((a) => !a.unknown && a.value.trim().length >= MIN_ANSWER)
       .map((a) => a.key)
   );
   const keys = DIMENSIONS.map((d) => d.key);
