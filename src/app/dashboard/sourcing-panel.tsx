@@ -91,18 +91,6 @@ export function SourcingPanel({
   const done = status?.status === "completed";
   const failed = status?.status === "failed";
 
-  if (done) {
-    return (
-      <div className="mt-5">
-        <p className="text-sm text-forest-deep">
-          Hunt complete — {status?.candidatesFound ?? 0} candidate
-          {status?.candidatesFound === 1 ? "" : "s"} found.
-        </p>
-        <HuntFindings problemId={problemId} live />
-      </div>
-    );
-  }
-
   if (running) {
     const ahead = status?.jobsAhead ?? 0;
     return (
@@ -125,12 +113,24 @@ export function SourcingPanel({
 
   return (
     <div className="mt-5">
-      <button
-        onClick={trigger}
-        className="bg-forest px-5 py-2 text-sm font-medium text-white transition-colors duration-200 hover:bg-forest-deep"
-      >
-        {gaveUp || failed ? "Try the hunt again" : "Source externally"}
-      </button>
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          onClick={trigger}
+          className="bg-forest px-5 py-2 text-sm font-medium text-white transition-colors duration-200 hover:bg-forest-deep"
+        >
+          {gaveUp || failed
+            ? "Try the hunt again"
+            : done
+              ? "Search again"
+              : "Search the web"}
+        </button>
+        {done && (
+          <span className="text-sm text-forest-deep">
+            Last hunt found {status?.candidatesFound ?? 0} candidate
+            {status?.candidatesFound === 1 ? "" : "s"}.
+          </span>
+        )}
+      </div>
       {(gaveUp || failed) && (
         <p className="mt-2 text-xs text-err">
           {gaveUp
@@ -138,10 +138,10 @@ export function SourcingPanel({
             : "The last hunt failed."}
         </p>
       )}
-      {/* Anything a previous hunt found for this problem stays on the
-          problem, pickable, rather than being posted off to the global
-          queue and forgotten. */}
-      <HuntFindings problemId={problemId} />
+      {/* Anything any hunt found for this problem stays on the problem,
+          pickable, rather than being posted off to the global queue and
+          forgotten. `done` means rows are still landing, so poll. */}
+      <HuntFindings problemId={problemId} live={done} />
     </div>
   );
 }

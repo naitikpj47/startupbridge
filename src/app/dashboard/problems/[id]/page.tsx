@@ -185,10 +185,6 @@ export default async function ProblemDetail({
                   honest. Below are the nearest adjacent candidates, clearly short
                   of the bar.
                 </p>
-                {/* The panel now renders the findings themselves, so the
-                    officer picks from what was found for THIS problem
-                    instead of being sent to the global review queue. */}
-                <SourcingPanel problemId={id} />
               </div>
             )}
             <div className="mt-4">
@@ -200,6 +196,18 @@ export default async function ProblemDetail({
             </div>
           </>
         )}
+      </div>
+
+      {/* Always here, whatever the pool turned up. Wanting MORE options
+          is not the same as having none, and a hunt's findings belong to
+          the problem for good — not only while the match list is empty. */}
+      <div className="mt-12">
+        <h2 className="text-sm font-semibold text-ink">From the open web</h2>
+        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-ink-secondary">
+          Search beyond the pool for companies with real deployment evidence.
+          You pick which ones are worth analysing before anything is scored.
+        </p>
+        <SourcingPanel problemId={id} />
       </div>
     </div>
   );
