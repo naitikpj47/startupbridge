@@ -12,6 +12,13 @@
  * near-miss.
  */
 
+import type { PppBand } from "@/lib/scoring/ppp";
+
+/** The one token meaning "not recorded", shared by every facet. */
+export const UNKNOWN = "unknown";
+/** Readiness spells its unknown differently — it is a score, not a value. */
+export const UNSCORED = "unscored";
+
 export interface SolutionRow {
   id: string;
   name: string;
@@ -41,6 +48,10 @@ export interface SolutionRow {
   teamSize: number | null;
   hasMetrics: boolean;
   profileText: string | null;
+  /** PPP readiness — a different question from base readiness. See
+   * src/lib/scoring/ppp.ts. Null when nothing is known. */
+  pppScore: number | null;
+  pppBand: PppBand;
 }
 
 export interface SolutionFilters {
@@ -66,7 +77,9 @@ export interface SolutionFilters {
   funding: string[]; // 5m | 1m | lt1m | zero | unknown
   team: string[]; // 20 | 6 | 1 | unknown
   source: string[];
-  sort: string; // readiness | newest | name
+  /** ready | approaching | pilot_first | unassessed */
+  ppp: string[];
+  sort: string; // readiness | ppp | newest | name
 }
 
 type Params = Record<string, string | string[] | undefined>;
@@ -97,6 +110,7 @@ export function parseFilters(params: Params): SolutionFilters {
     funding: list(params.funding),
     team: list(params.team),
     source: list(params.source),
+    ppp: list(params.ppp),
     sort: one(params.sort) || "readiness",
   };
 }
@@ -111,7 +125,7 @@ export function activeFilterCount(f: SolutionFilters): number {
   if (f.backing) n++;
   for (const k of [
     "sector", "sdg", "tech", "hq", "active", "region",
-    "poc", "infra", "readiness", "confidence", "funding", "team", "source",
+    "poc", "infra", "readiness", "confidence", "funding", "team", "source", "ppp",
   ] as const) {
     if (f[k].length) n++;
   }
@@ -172,9 +186,17 @@ function facetMatch(selected: string[], value: string | null): boolean {
   return selected.some((s) => s.toLowerCase() === value.toLowerCase());
 }
 
-/** Any-overlap for array-valued fields (sectors, tags, countries). */
+/**
+ * Any-overlap for array-valued fields (sectors, tags, countries).
+ *
+ * An empty array is unknown, and — same rule as the scalar facets — it is
+ * selectable rather than invisible. 76 of the pool have no recorded
+ * sector; "show me those" is a legitimate question, and the one an
+ * officer asks when deciding what to send for analysis next.
+ */
 function overlap(selected: string[], values: string[]): boolean {
   if (!selected.length) return true;
+  if (values.length === 0) return selected.includes(UNKNOWN);
   const have = new Set(values.map((v) => v.toLowerCase()));
   return selected.some((s) => have.has(s.toLowerCase()));
 }
@@ -208,6 +230,7 @@ export function matchesFilters(row: SolutionRow, f: SolutionFilters): boolean {
     return false;
   if (f.team.length && !f.team.includes(teamBand(row.teamSize))) return false;
   if (f.source.length && !f.source.includes(row.source)) return false;
+  if (f.ppp.length && !f.ppp.includes(row.pppBand)) return false;
 
   if (f.q) {
     const hay = [
@@ -243,6 +266,16 @@ export function sortSolutions(rows: SolutionRow[], sort: string): SolutionRow[] 
         byName(a, b)
     );
   }
+  if (sort === "ppp") {
+    // Same shape as readiness: unassessable last, because a company
+    // nobody has looked at is not a weak candidate, just an unknown one.
+    return sorted.sort((a, b) => {
+      if (a.pppScore === null && b.pppScore === null) return byName(a, b);
+      if (a.pppScore === null) return 1;
+      if (b.pppScore === null) return -1;
+      return b.pppScore - a.pppScore || byName(a, b);
+    });
+  }
   // Default: readiness desc, unscored last — an unknown is less precise,
   // not worse, but a ranked list has to put it somewhere and the honest
   // place is after the measured ones.
@@ -252,6 +285,290 @@ export function sortSolutions(rows: SolutionRow[], sort: string): SolutionRow[] 
     if (b.readiness === null) return -1;
     return b.readiness - a.readiness || byName(a, b);
   });
+}
+
+// ── The overview matrix ────────────────────────────────────────────────
+
+/**
+ * A dimension the matrix can pivot on. `values` returns the buckets a
+ * startup belongs to — plural, because a company with three sectors
+ * genuinely is in three of them. `param` is the filter key a cell click
+ * writes, so every cell in the grid is reachable through the same rail
+ * an officer could have driven by hand.
+ */
+export interface MatrixDimension {
+  key: string;
+  label: string;
+  param: keyof SolutionFilters;
+  /** Buckets this row falls in. Empty is impossible — unknown is a bucket. */
+  values: (r: SolutionRow) => string[];
+  /** Display label for a bucket. */
+  format: (v: string) => string;
+}
+
+const orUnknown = (vs: string[]): string[] => (vs.length ? vs : [UNKNOWN]);
+const titleish = (v: string) =>
+  v === UNKNOWN ? "not recorded" : v.replace(/_/g, " ");
+
+export const MATRIX_DIMENSIONS: MatrixDimension[] = [
+  {
+    key: "sector", label: "Sector", param: "sector",
+    values: (r) => orUnknown(r.sectors.map((s) => s.toLowerCase())),
+    format: titleish,
+  },
+  {
+    key: "region", label: "Region", param: "region",
+    values: (r) => orUnknown(r.regions),
+    format: (v) => (v === UNKNOWN ? "not recorded" : v),
+  },
+  {
+    key: "tech", label: "Technology", param: "tech",
+    values: (r) => orUnknown(r.techTypes.map((s) => s.toLowerCase())),
+    format: titleish,
+  },
+  {
+    key: "sdg", label: "SDG", param: "sdg",
+    values: (r) => orUnknown(r.sdgTags.map((s) => s.toUpperCase())),
+    format: (v) => (v === UNKNOWN ? "not recorded" : v),
+  },
+  {
+    key: "hq", label: "HQ country", param: "hq",
+    values: (r) => [r.hqCountry ?? UNKNOWN],
+    format: (v) => (v === UNKNOWN ? "not recorded" : v),
+  },
+  {
+    key: "active", label: "Active in", param: "active",
+    values: (r) => orUnknown(r.countriesActive),
+    format: (v) => (v === UNKNOWN ? "not recorded" : v),
+  },
+  {
+    key: "poc", label: "Proof of concept", param: "poc",
+    values: (r) => [r.pocStatus ?? UNKNOWN],
+    format: titleish,
+  },
+  {
+    key: "infra", label: "Infrastructure", param: "infra",
+    values: (r) => [r.infraIntensity ?? UNKNOWN],
+    format: titleish,
+  },
+  {
+    key: "readiness", label: "Readiness", param: "readiness",
+    values: (r) => [readinessBand(r.readiness)],
+    format: (v) =>
+      READINESS_BANDS.find((b) => b.key === v)?.label ?? titleish(v),
+  },
+  {
+    key: "confidence", label: "Data confidence", param: "confidence",
+    values: (r) => [r.confidence ?? UNKNOWN],
+    format: (v) => (v === UNKNOWN ? "not assessed" : v),
+  },
+  {
+    key: "status", label: "Pool status", param: "status",
+    values: (r) => [r.status],
+    format: titleish,
+  },
+  {
+    key: "source", label: "How we found them", param: "source",
+    values: (r) => [r.source],
+    format: titleish,
+  },
+  {
+    key: "ppp", label: "PPP readiness", param: "ppp",
+    values: (r) => [r.pppBand],
+    format: (v) =>
+      ({ ready: "PPP ready", approaching: "approaching", pilot_first: "pilot first", unassessed: "not assessable" })[v] ?? v,
+  },
+  {
+    key: "gov", label: "Government experience", param: "gov",
+    values: (r) => [r.govExperience === null ? UNKNOWN : r.govExperience ? "yes" : "no"],
+    format: (v) => (v === UNKNOWN ? "not recorded" : v),
+  },
+];
+
+export function matrixDimension(key: string): MatrixDimension {
+  return MATRIX_DIMENSIONS.find((d) => d.key === key) ?? MATRIX_DIMENSIONS[0];
+}
+
+/**
+ * Cell key. NUL rather than a space because axis values contain spaces
+ * ("East Asia"), which would make `sector + " " + region` ambiguous —
+ * and silently so, which is worse.
+ */
+export function cellKey(rowValue: string, colValue: string): string {
+  return `${rowValue} ${colValue}`;
+}
+
+export interface MatrixAxis {
+  value: string;
+  label: string;
+  /** Distinct startups in this row/column — NOT the sum of its cells. */
+  total: number;
+}
+
+export interface Matrix {
+  rows: MatrixAxis[];
+  cols: MatrixAxis[];
+  /** Counts by `${rowValue} ${colValue}`. Absent means zero. */
+  cells: Record<string, number>;
+  /** Distinct startups counted overall. */
+  total: number;
+  /** Largest single cell, for heat scaling. */
+  max: number;
+  /** True when axes were capped and some buckets are not shown. */
+  rowsTruncated: boolean;
+  colsTruncated: boolean;
+  /** True when any startup occupies more than one cell. */
+  multiCounted: boolean;
+}
+
+const MAX_ROWS = 18;
+const MAX_COLS = 12;
+
+/**
+ * Cross-tabulate the given rows.
+ *
+ * Totals are distinct startup counts while cells are memberships, so a
+ * row's cells can sum higher than its total — a company working in four
+ * countries is one startup in four columns. The alternative, picking a
+ * "primary" sector or country, would be inventing a fact to make the
+ * arithmetic tidy. The UI says which is which instead.
+ *
+ * Axes are capped by size, largest first, with unknown always kept: the
+ * gap is the most informative bucket on the grid and must never be the
+ * one that falls off the end.
+ */
+export function buildMatrix(
+  rows: SolutionRow[],
+  rowDim: MatrixDimension,
+  colDim: MatrixDimension
+): Matrix {
+  const cells: Record<string, number> = {};
+  const rowTotals = new Map<string, number>();
+  const colTotals = new Map<string, number>();
+  let multiCounted = false;
+
+  for (const r of rows) {
+    const rvs = [...new Set(rowDim.values(r))];
+    const cvs = [...new Set(colDim.values(r))];
+    if (rvs.length > 1 || cvs.length > 1) multiCounted = true;
+    for (const rv of rvs) rowTotals.set(rv, (rowTotals.get(rv) ?? 0) + 1);
+    for (const cv of cvs) colTotals.set(cv, (colTotals.get(cv) ?? 0) + 1);
+    for (const rv of rvs) {
+      for (const cv of cvs) {
+        const k = cellKey(rv, cv);
+        cells[k] = (cells[k] ?? 0) + 1;
+      }
+    }
+  }
+
+  const axis = (
+    totals: Map<string, number>,
+    dim: MatrixDimension,
+    cap: number
+  ): { axis: MatrixAxis[]; truncated: boolean } => {
+    const all = [...totals.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+    );
+    // Unknown earns its place regardless of rank, then sits last so the
+    // known buckets read as the substance of the grid.
+    const known = all.filter(([v]) => v !== UNKNOWN && v !== UNSCORED);
+    const gap = all.filter(([v]) => v === UNKNOWN || v === UNSCORED);
+    const keptKnown = known.slice(0, Math.max(1, cap - gap.length));
+    const kept = [...keptKnown, ...gap];
+    return {
+      axis: kept.map(([value, total]) => ({
+        value,
+        label: dim.format(value),
+        total,
+      })),
+      truncated: known.length > keptKnown.length,
+    };
+  };
+
+  const r = axis(rowTotals, rowDim, MAX_ROWS);
+  const c = axis(colTotals, colDim, MAX_COLS);
+
+  return {
+    rows: r.axis,
+    cols: c.axis,
+    cells,
+    total: rows.length,
+    max: Math.max(0, ...Object.values(cells)),
+    rowsTruncated: r.truncated,
+    colsTruncated: c.truncated,
+    multiCounted,
+  };
+}
+
+/**
+ * How much of this set we actually know, per signal. The pool is mostly
+ * un-analysed hunt findings, and a distribution chart that does not say
+ * so invites an officer to read confidence into thin air.
+ */
+export interface Coverage {
+  total: number;
+  vetted: number;
+  bars: { label: string; known: number }[];
+}
+
+export function coverageOf(rows: SolutionRow[]): Coverage {
+  const count = (p: (r: SolutionRow) => boolean) => rows.filter(p).length;
+  return {
+    total: rows.length,
+    vetted: count((r) => r.status === "approved"),
+    bars: [
+      { label: "Sector recorded", known: count((r) => r.sectors.length > 0) },
+      { label: "Proof of concept known", known: count((r) => r.pocStatus !== null) },
+      { label: "Readiness scored", known: count((r) => r.readiness !== null) },
+      { label: "Analysed (embedded)", known: count((r) => r.profileText !== null) },
+    ],
+  };
+}
+
+/** Serialize filters back to a query string, for cell links. */
+export function toQuery(f: SolutionFilters): URLSearchParams {
+  const p = new URLSearchParams();
+  if (f.q) p.set("q", f.q);
+  if (f.status !== "approved") p.set("status", f.status);
+  for (const k of ["fit", "gov", "backing", "sort"] as const) {
+    if (f[k]) p.set(k, f[k]);
+  }
+  for (const k of [
+    "sector", "sdg", "tech", "hq", "active", "region",
+    "poc", "infra", "readiness", "confidence", "funding", "team", "source", "ppp",
+  ] as const) {
+    for (const v of f[k]) p.append(k, v);
+  }
+  return p;
+}
+
+/**
+ * The href for one cell: current filters, with the two matrix dimensions
+ * SET (not appended) to the clicked bucket, so the list below matches
+ * the number the officer just clicked.
+ */
+export function cellHref(
+  filters: SolutionFilters,
+  rowDim: MatrixDimension,
+  rowValue: string,
+  colDim: MatrixDimension,
+  colValue: string
+): string {
+  const p = toQuery(filters);
+  p.set("row", rowDim.key);
+  p.set("col", colDim.key);
+  for (const [dim, value] of [
+    [rowDim, rowValue],
+    [colDim, colValue],
+  ] as const) {
+    p.delete(dim.param);
+    p.set(dim.param, value);
+  }
+  // Selecting a status bucket must not be masked by the default.
+  if (rowDim.param === "status" || colDim.param === "status") {
+    p.set("status", rowDim.param === "status" ? rowValue : colValue);
+  }
+  return `?${p.toString()}`;
 }
 
 export interface FacetOptions {

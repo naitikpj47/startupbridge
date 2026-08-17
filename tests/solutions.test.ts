@@ -6,8 +6,20 @@ import {
   sortSolutions,
   facetOptions,
   activeFilterCount,
+  buildMatrix,
+  matrixDimension,
+  cellHref,
+  cellKey,
+  UNKNOWN,
   type SolutionRow,
 } from "../src/lib/solutions";
+import {
+  computePppReadiness,
+  pppWeightsFrom,
+  bandOf,
+  DEFAULT_PPP_WEIGHTS,
+  type PppInput,
+} from "../src/lib/scoring/ppp";
 import {
   cleanObjectives,
   cleanMilestones,
@@ -57,6 +69,8 @@ function row(overrides: Partial<SolutionRow> = {}): SolutionRow {
     teamSize: 12,
     hasMetrics: true,
     profileText: "Deployed across island provinces.",
+    pppScore: 72,
+    pppBand: "ready",
     ...overrides,
   };
 }
@@ -181,6 +195,203 @@ check(
 const opts = facetOptions([row(), row({ id: "s2", sectors: ["water"], hqCountry: null })]);
 check("facet sectors are the distinct set", opts.sectors, ["health", "water"]);
 check("a null HQ contributes no option", opts.hqs, ["KR"]);
+
+console.log("\nthe matrix");
+
+const grid = [
+  row({ id: "m1", sectors: ["health"], regions: ["East Asia"] }),
+  row({ id: "m2", sectors: ["health", "logistics"], regions: ["East Asia"] }),
+  row({ id: "m3", sectors: [], regions: [] }),
+];
+const m = buildMatrix(grid, matrixDimension("sector"), matrixDimension("region"));
+check("cells count memberships", m.cells[cellKey("health", "East Asia")], 2);
+check("a second sector lands in its own cell", m.cells[cellKey("logistics", "East Asia")], 1);
+check(
+  "a row with no sector becomes the unknown bucket",
+  m.cells[cellKey(UNKNOWN, UNKNOWN)],
+  1
+);
+check("total counts startups once, not memberships", m.total, 3);
+check(
+  "a multi-sector startup makes row totals exceed the grand total",
+  m.rows.reduce((a, r) => a + r.total, 0) > m.total,
+  true
+);
+check("the overlap is flagged so the UI can explain it", m.multiCounted, true);
+check(
+  "unknown is always present as an axis value",
+  m.rows.some((r) => r.value === UNKNOWN) && m.cols.some((c) => c.value === UNKNOWN),
+  true
+);
+check(
+  "an empty cell is absent, not zero-filled",
+  m.cells[cellKey("logistics", UNKNOWN)],
+  undefined
+);
+check("max is the largest cell, for heat scaling", m.max, 2);
+
+// Unknown must survive axis capping — the gap is the most informative
+// bucket and must never be the one that falls off the end.
+const wide = [
+  ...Array.from({ length: 40 }, (_, i) =>
+    row({ id: `w${i}`, sectors: [`sector${i}`], regions: ["Africa"] })
+  ),
+  row({ id: "wu", sectors: [], regions: ["Africa"] }),
+];
+const capped = buildMatrix(wide, matrixDimension("sector"), matrixDimension("region"));
+check("wide axes are capped", capped.rowsTruncated, true);
+check(
+  "...but unknown is kept regardless of rank",
+  capped.rows.some((r) => r.value === UNKNOWN),
+  true
+);
+
+// Cell links must reproduce exactly the number that was clicked.
+const href = cellHref(f({}), matrixDimension("sector"), "health", matrixDimension("region"), "East Asia");
+check("a cell link sets both dimensions", [
+  href.includes("sector=health"),
+  href.includes("region=East+Asia") || href.includes("region=East%20Asia"),
+], [true, true]);
+check("a cell link carries the pivot", href.includes("row=sector") && href.includes("col=region"), true);
+
+const narrowed = parseFilters(Object.fromEntries(new URLSearchParams(href.slice(1))));
+check(
+  "following a cell link yields exactly that cell's rows",
+  grid.filter((r) => matchesFilters(r, narrowed)).length,
+  m.cells[cellKey("health", "East Asia")]
+);
+const unknownHref = cellHref(f({}), matrixDimension("sector"), UNKNOWN, matrixDimension("region"), UNKNOWN);
+const unknownFilters = parseFilters(Object.fromEntries(new URLSearchParams(unknownHref.slice(1))));
+check(
+  "the unknown cell is clickable and selects the unrecorded rows",
+  grid.filter((r) => matchesFilters(r, unknownFilters)).map((r) => r.id),
+  ["m3"]
+);
+
+console.log("\nPPP readiness");
+
+const bare: PppInput = {
+  gov_experience: null, poc_status: null, infra_intensity: null,
+  funding_raised_usd: null, team_size: null, backing: null,
+  countries_active: [], pilot_outcome: null,
+};
+check("nothing known scores NULL, never 0", computePppReadiness(bare).score, null);
+check("...and reads as not assessable", computePppReadiness(bare).band, "unassessed");
+
+const strong = computePppReadiness({
+  gov_experience: true,
+  poc_status: "deployed_in_field",
+  infra_intensity: "heavy",
+  funding_raised_usd: 8_000_000,
+  team_size: 60,
+  backing: true,
+  countries_active: ["KH", "BD", "PH"],
+  pilot_outcome: "met_objectives",
+});
+check("everything strong scores 100", strong.score, 100);
+check("...on all eight signals", strong.knownCount, 8);
+check("...with no thin-evidence flag", strong.thinEvidence, false);
+check("...and bands as ready", strong.band, "ready");
+
+const weak = computePppReadiness({
+  gov_experience: false,
+  poc_status: "none",
+  infra_intensity: "plug_and_play",
+  funding_raised_usd: 0,
+  team_size: 2,
+  backing: false,
+  countries_active: ["PH"],
+  pilot_outcome: "not_met",
+});
+check("everything weak still scores, and low", weak.score !== null && weak.score < 20, true);
+check("...and bands as pilot first", weak.band, "pilot_first");
+
+// The NULL rule: an unknown must not drag a company down.
+const govOnly = computePppReadiness({ ...bare, gov_experience: true });
+check("one strong known signal scores 100 of what is known", govOnly.score, 100);
+check("...on a single known signal", govOnly.knownCount, 1);
+check("...but a lone signal cannot earn the top band", govOnly.band, "approaching");
+check("...and is flagged as thin evidence", govOnly.thinEvidence, true);
+check(
+  "three known signals unlock it",
+  computePppReadiness({
+    ...bare, gov_experience: true, poc_status: "deployed_in_field", team_size: 60,
+  }).band,
+  "ready"
+);
+check(
+  "the breadth floor is configurable",
+  bandOf(100, 1, { ...DEFAULT_PPP_WEIGHTS, min_signals_for_ready: 1 }),
+  "ready"
+);
+const govPlusUnknowns = computePppReadiness({
+  ...bare, gov_experience: true, countries_active: [],
+});
+check(
+  "adding unknowns does not lower the score",
+  govPlusUnknowns.score,
+  govOnly.score
+);
+const govNo = computePppReadiness({ ...bare, gov_experience: false });
+check("a confirmed NO does score zero, inside the denominator", govNo.score, 0);
+check("...which is different from unknown", govNo.band !== "unassessed", true);
+
+// The inversion that makes this score different from base readiness.
+const heavy = computePppReadiness({ ...bare, infra_intensity: "heavy" });
+const light = computePppReadiness({ ...bare, infra_intensity: "plug_and_play" });
+check(
+  "heavy infrastructure scores HIGHER for PPP than plug-and-play",
+  heavy.score! > light.score!,
+  true
+);
+
+// Never having piloted with us is not evidence against a company.
+const noPilot = computePppReadiness({ ...bare, gov_experience: true, pilot_outcome: null });
+const badPilot = computePppReadiness({ ...bare, gov_experience: true, pilot_outcome: "not_met" });
+check(
+  "no pilot with us is unknown, not a zero",
+  noPilot.score! > badPilot.score!,
+  true
+);
+
+// Zero recorded countries is unknown too — nobody states 'operates nowhere'.
+const noCountries = computePppReadiness({ ...bare, gov_experience: true, countries_active: [] });
+check(
+  "no recorded countries leaves the denominator",
+  noCountries.signals.find((s) => s.key === "jurisdictions")!.known,
+  false
+);
+
+check("every signal carries a readable note", computePppReadiness(bare).signals.every((s) => s.note.length > 0), true);
+check("there are eight signals", computePppReadiness(bare).signals.length, 8);
+
+// Weights are config, and a broken config degrades rather than throws.
+check("junk weights fall back to defaults", pppWeightsFrom("nonsense").gov_experience, 30);
+check("a partial override merges", pppWeightsFrom({ gov_experience: 50 }).gov_experience, 50);
+check("...leaving the rest intact", pppWeightsFrom({ gov_experience: 50 }).pilot_evidence, 25);
+check("negative weights are ignored", pppWeightsFrom({ gov_experience: -5 }).gov_experience, 30);
+
+// Filtering and sorting on the band.
+check(
+  "the ppp facet filters by band",
+  [
+    matchesFilters(row({ pppBand: "ready" }), f({ ppp: "ready" })),
+    matchesFilters(row({ pppBand: "pilot_first" }), f({ ppp: "ready" })),
+  ],
+  [true, false]
+);
+check(
+  "sorting by ppp puts unassessable last",
+  sortSolutions(
+    [
+      row({ id: "u", name: "U", pppScore: null, pppBand: "unassessed" }),
+      row({ id: "h", name: "H", pppScore: 90, pppBand: "ready" }),
+      row({ id: "l", name: "L", pppScore: 30, pppBand: "pilot_first" }),
+    ],
+    "ppp"
+  ).map((r) => r.id),
+  ["h", "l", "u"]
+);
 
 console.log("\npilot sanitizers");
 

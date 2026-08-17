@@ -24,6 +24,43 @@ export function ConfidenceChip({
   );
 }
 
+/**
+ * PPP readiness, beside the name. Only "ready" gets the forest
+ * treatment — the point of the chip is to make a genuinely
+ * partnership-grade company findable at a glance, not to decorate every
+ * card. "Not assessable" renders nothing at all: an absent chip is the
+ * honest signal for a company nobody has looked at, and a grey badge
+ * saying so on 94 of 106 cards would be noise.
+ */
+export function PppChip({
+  band,
+  score,
+}: {
+  band: string;
+  score: number | null;
+}) {
+  if (band === "unassessed") return null;
+  const styles: Record<string, string> = {
+    ready: "bg-forest text-white",
+    approaching: "bg-forest-tint text-forest-deep",
+    pilot_first: "bg-well text-ink-secondary",
+  };
+  const label: Record<string, string> = {
+    ready: "PPP ready",
+    approaching: "PPP approaching",
+    pilot_first: "pilot first",
+  };
+  return (
+    <span
+      className={`rounded px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide ${styles[band] ?? "bg-well text-ink-secondary"}`}
+      title={`PPP readiness ${score ?? "—"} of 100 — can this company survive procurement and deliver at commercial scale`}
+    >
+      {label[band] ?? band}
+      {score !== null && <span className="ml-1 font-mono tabular-nums opacity-80">{score}</span>}
+    </span>
+  );
+}
+
 export function StatusChip({ status }: { status: string }) {
   const styles: Record<string, string> = {
     submitted: "bg-well text-ink-secondary",

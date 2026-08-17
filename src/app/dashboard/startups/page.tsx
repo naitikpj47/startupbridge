@@ -8,12 +8,25 @@ import {
   sortSolutions,
   facetOptions,
   activeFilterCount,
+  buildMatrix,
+  coverageOf,
+  matrixDimension,
+  cellHref,
+  cellKey,
+  toQuery,
+  MATRIX_DIMENSIONS,
   READINESS_BANDS,
   FUNDING_BANDS,
   TEAM_BANDS,
+  UNKNOWN,
   type SolutionRow,
+  type SolutionFilters,
+  type Matrix,
+  type MatrixDimension,
+  type Coverage,
 } from "@/lib/solutions";
-import { ConfidenceChip, StatusChip, PageTitle } from "../bits";
+import { computePppReadiness, pppWeightsFrom, PPP_BANDS } from "@/lib/scoring/ppp";
+import { ConfidenceChip, StatusChip, PppChip, PageTitle } from "../bits";
 
 export const dynamic = "force-dynamic";
 
@@ -37,9 +50,16 @@ export default async function StartupsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { sb } = await requireOfficer();
-  const filters = parseFilters(await searchParams);
+  const params = await searchParams;
+  const filters = parseFilters(params);
+  // Pivot choice is view state, not a filter — it never narrows anything.
+  const pick = (v: string | string[] | undefined) =>
+    (Array.isArray(v) ? v[0] : v) ?? "";
+  const rowDim = matrixDimension(pick(params.row) || "sector");
+  const colDim = matrixDimension(pick(params.col) || "region");
 
-  const [{ data, error }, { data: regionRows }, { data: verifiedRows }] =
+  const [{ data, error }, { data: regionRows }, { data: verifiedRows },
+         { data: pilotRows }, { data: configRow }] =
     await Promise.all([
       sb
         .from("startups")
@@ -53,6 +73,14 @@ export default async function StartupsPage({
         .neq("status", "rejected"),
       sb.from("country_regions").select("country, region"),
       sb.from("affiliations").select("startup_id").eq("verified", true),
+      // Our own completed pilots are the highest-provenance PPP signal
+      // available: we set the objectives and we recorded the result.
+      sb
+        .from("pilots")
+        .select("outcome, matches(startup_id)")
+        .eq("status", "completed")
+        .not("outcome", "is", null),
+      sb.from("scoring_config").select("ppp_weights").single(),
     ]);
   if (error) throw new Error(error.message);
 
@@ -60,6 +88,26 @@ export default async function StartupsPage({
     (regionRows ?? []).map((r) => [r.country as string, r.region as string])
   );
   const verifiedBacked = new Set((verifiedRows ?? []).map((r) => r.startup_id as string));
+
+  // Best outcome per startup — one good pilot is the evidence, and a
+  // later disappointing one does not erase a proven delivery.
+  const RANK = { met_objectives: 3, partial: 2, not_met: 1 } as const;
+  type Outcome = keyof typeof RANK;
+  const pilotOutcome = new Map<string, Outcome>();
+  for (const row of (pilotRows ?? []) as unknown as {
+    outcome: Outcome;
+    matches: { startup_id: string } | { startup_id: string }[] | null;
+  }[]) {
+    const m = Array.isArray(row.matches) ? row.matches[0] : row.matches;
+    if (!m?.startup_id || !row.outcome) continue;
+    const prior = pilotOutcome.get(m.startup_id);
+    if (!prior || RANK[row.outcome] > RANK[prior]) {
+      pilotOutcome.set(m.startup_id, row.outcome);
+    }
+  }
+  const pppWeights = pppWeightsFrom(
+    (configRow as { ppp_weights?: unknown } | null)?.ppp_weights
+  );
 
   // Concatenated select strings defeat supabase-js's literal type parser.
   const raw = (data ?? []) as unknown as {
@@ -106,6 +154,27 @@ export default async function StartupsPage({
       ),
     ];
 
+    const fundingUsd =
+      p?.funding_raised_usd == null ? null : Number(p.funding_raised_usd);
+    const backing = verifiedBacked.has(s.id)
+      ? true
+      : p?.affiliations_confirmed_none
+        ? false
+        : null;
+    const ppp = computePppReadiness(
+      {
+        gov_experience: p?.gov_experience ?? null,
+        poc_status: p?.poc_status ?? null,
+        infra_intensity: p?.infra_intensity ?? null,
+        funding_raised_usd: fundingUsd,
+        team_size: p?.team_size ?? null,
+        backing,
+        countries_active: active,
+        pilot_outcome: pilotOutcome.get(s.id) ?? null,
+      },
+      pppWeights
+    );
+
     return {
       id: s.id,
       name: s.name,
@@ -133,22 +202,23 @@ export default async function StartupsPage({
       readiness: p?.base_readiness ?? null,
       confidence: p?.data_confidence ?? null,
       govExperience: p?.gov_experience ?? null,
-      backing: verifiedBacked.has(s.id)
-        ? true
-        : p?.affiliations_confirmed_none
-          ? false
-          : null,
-      fundingUsd:
-        p?.funding_raised_usd == null ? null : Number(p.funding_raised_usd),
+      backing,
+      fundingUsd,
       teamSize: p?.team_size ?? null,
       hasMetrics: Boolean(p?.metrics && Object.keys(p.metrics).length),
       profileText: p?.profile_text ?? null,
+      pppScore: ppp.score,
+      pppBand: ppp.band,
     };
   });
 
   const options = facetOptions(rows);
   const matched = sortSolutions(rows.filter((r) => matchesFilters(r, filters)), filters.sort);
   const narrowing = activeFilterCount(filters);
+  // The overview describes exactly what the list below contains — no
+  // second, differently-scoped number for the officer to reconcile.
+  const coverage = coverageOf(matched);
+  const matrix = buildMatrix(matched, rowDim, colDim);
 
   return (
     <div>
@@ -160,6 +230,9 @@ export default async function StartupsPage({
       <div className="mt-6 grid grid-cols-1 gap-8 lg:grid-cols-[230px_1fr]">
         {/* ── The filter rail — one GET form, shareable URLs ─────────── */}
         <form method="get" className="lg:sticky lg:top-8 lg:self-start">
+          {/* The pivot is view state; the rail must not reset it. */}
+          <input type="hidden" name="row" value={rowDim.key} />
+          <input type="hidden" name="col" value={colDim.key} />
           <input
             name="q"
             defaultValue={filters.q}
@@ -189,19 +262,28 @@ export default async function StartupsPage({
             ]}
           />
 
+          <FacetGroup label="PPP readiness" name="ppp" selected={filters.ppp}
+            options={PPP_BANDS.map((b) => [b.key, b.label] as [string, string])} />
+
           <FacetGroup label="Sector" name="sector" selected={filters.sector}
-            options={options.sectors.map((v) => [v, v])} />
+            options={[...options.sectors.map((v) => [v, v] as [string, string]),
+                      [UNKNOWN, "not recorded"]]} />
           <FacetGroup label="SDG" name="sdg" selected={filters.sdg}
-            options={options.sdgs.map((v) => [v, v])} />
+            options={[...options.sdgs.map((v) => [v, v] as [string, string]),
+                      [UNKNOWN, "not recorded"]]} />
           <FacetGroup label="Technology" name="tech" selected={filters.tech}
-            options={options.techs.map((v) => [v, v.replace(/_/g, " ")])} />
+            options={[...options.techs.map((v) => [v, v.replace(/_/g, " ")] as [string, string]),
+                      [UNKNOWN, "not recorded"]]} />
 
           <FacetGroup label="Active in" name="active" selected={filters.active}
-            options={options.actives.map((v) => [v, countryName(v)])} />
+            options={[...options.actives.map((v) => [v, countryName(v)] as [string, string]),
+                      [UNKNOWN, "not recorded"]]} />
           <FacetGroup label="Region" name="region" selected={filters.region}
-            options={options.regions.map((v) => [v, v])} />
+            options={[...options.regions.map((v) => [v, v] as [string, string]),
+                      [UNKNOWN, "not recorded"]]} />
           <FacetGroup label="HQ country" name="hq" selected={filters.hq}
-            options={options.hqs.map((v) => [v, countryName(v)])} />
+            options={[...options.hqs.map((v) => [v, countryName(v)] as [string, string]),
+                      [UNKNOWN, "not recorded"]]} />
 
           <FacetGroup label="Proof of concept" name="poc" selected={filters.poc}
             options={[
@@ -264,6 +346,7 @@ export default async function StartupsPage({
             value={filters.sort}
             options={[
               ["readiness", "Readiness, highest first"],
+              ["ppp", "PPP readiness, highest first"],
               ["newest", "Newest first"],
               ["name", "Name, A–Z"],
             ]}
@@ -286,7 +369,15 @@ export default async function StartupsPage({
 
         {/* ── The menu ───────────────────────────────────────────────── */}
         <div className="min-w-0">
-          <p className="text-xs uppercase tracking-wider text-ink-faint">
+          <Overview
+            coverage={coverage}
+            matrix={matrix}
+            filters={filters}
+            rowDim={rowDim}
+            colDim={colDim}
+          />
+
+          <p className="mt-10 text-xs uppercase tracking-wider text-ink-faint">
             {matched.length} of {rows.length} solution{rows.length === 1 ? "" : "s"}
             {narrowing > 0 ? ` · ${narrowing} filter${narrowing > 1 ? "s" : ""} on` : ""}
           </p>
@@ -316,6 +407,221 @@ export default async function StartupsPage({
   );
 }
 
+/**
+ * The overview: how much we actually know, then a cross-tab of what we
+ * have. Placed above the list because a distribution is a better first
+ * question than a scroll — and because with most of the pool
+ * un-analysed, the coverage strip is the context every number below it
+ * needs.
+ */
+function Overview({
+  coverage,
+  matrix,
+  filters,
+  rowDim,
+  colDim,
+}: {
+  coverage: Coverage;
+  matrix: Matrix;
+  filters: SolutionFilters;
+  rowDim: MatrixDimension;
+  colDim: MatrixDimension;
+}) {
+  if (coverage.total === 0) return null;
+  const pct = (n: number) => Math.round((100 * n) / coverage.total);
+
+  return (
+    <section className="animate-rise border border-line bg-surface p-5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="font-mono text-2xl tabular-nums tracking-tight text-ink">
+          {coverage.total}
+        </span>
+        <span className="text-sm text-ink">
+          solution{coverage.total === 1 ? "" : "s"} in view
+        </span>
+        <span className="text-xs text-ink-secondary">
+          · {coverage.vetted} vetted
+        </span>
+      </div>
+
+      {/* What we actually know. A distribution without this reads as more
+          certain than it is. */}
+      <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
+        {coverage.bars.map((b) => (
+          <div key={b.label}>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="truncate text-[11px] text-ink-secondary">{b.label}</span>
+              <span className="font-mono text-[11px] tabular-nums text-ink">
+                {b.known}
+                <span className="text-ink-faint">/{coverage.total}</span>
+              </span>
+            </div>
+            <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-line">
+              <div
+                className="h-full rounded-full bg-forest"
+                style={{ width: `${pct(b.known)}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Pivot. A GET form so the choice lives in the URL like everything
+          else on this page. */}
+      <form method="get" className="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-4">
+        {[...toQuery(filters).entries()].map(([k, v], i) => (
+          <input key={`${k}-${i}`} type="hidden" name={k} value={v} />
+        ))}
+        <span className="text-[11px] font-medium uppercase tracking-wider text-ink-secondary">
+          Break down by
+        </span>
+        <select
+          name="row"
+          defaultValue={rowDim.key}
+          className="border border-line bg-surface px-2 py-1 text-sm"
+        >
+          {MATRIX_DIMENSIONS.map((d) => (
+            <option key={d.key} value={d.key}>{d.label}</option>
+          ))}
+        </select>
+        <span className="text-sm text-ink-faint">×</span>
+        <select
+          name="col"
+          defaultValue={colDim.key}
+          className="border border-line bg-surface px-2 py-1 text-sm"
+        >
+          {MATRIX_DIMENSIONS.map((d) => (
+            <option key={d.key} value={d.key}>{d.label}</option>
+          ))}
+        </select>
+        <button className="border border-line px-2.5 py-1 text-xs text-ink-secondary hover:bg-well">
+          Pivot
+        </button>
+      </form>
+
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr>
+              <th className="sticky left-0 z-10 bg-surface px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-wider text-ink-secondary">
+                {rowDim.label}
+              </th>
+              {matrix.cols.map((c) => (
+                <th
+                  key={c.value}
+                  className="px-2 py-1.5 text-right text-[11px] font-medium text-ink-secondary"
+                  title={`${c.label} — ${c.total} startup${c.total === 1 ? "" : "s"}`}
+                >
+                  <span className={c.value === UNKNOWN ? "italic text-ink-faint" : ""}>
+                    {c.label}
+                  </span>
+                </th>
+              ))}
+              <th className="px-2 py-1.5 text-right text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+                All
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.rows.map((r) => (
+              <tr key={r.value} className="border-t border-line">
+                <th
+                  scope="row"
+                  className={`sticky left-0 z-10 bg-surface px-2 py-1.5 text-left text-xs font-normal ${
+                    r.value === UNKNOWN ? "italic text-ink-faint" : "text-ink"
+                  }`}
+                >
+                  {r.label}
+                </th>
+                {matrix.cols.map((c) => {
+                  const n = matrix.cells[cellKey(r.value, c.value)] ?? 0;
+                  return (
+                    <td key={c.value} className="p-0 text-right">
+                      {n > 0 ? (
+                        <Link
+                          href={cellHref(filters, rowDim, r.value, colDim, c.value)}
+                          className="block px-2 py-1.5 font-mono text-xs tabular-nums text-ink transition-colors duration-150 hover:bg-forest hover:text-white"
+                          style={{
+                            // Heat, not decoration: where the pool is thick.
+                            backgroundColor:
+                              matrix.max > 0
+                                ? `color-mix(in srgb, var(--color-forest-tint) ${Math.round(
+                                    (100 * n) / matrix.max
+                                  )}%, transparent)`
+                                : undefined,
+                          }}
+                          title={`${r.label} × ${c.label} — ${n} startup${n === 1 ? "" : "s"}`}
+                        >
+                          {n}
+                        </Link>
+                      ) : (
+                        <span
+                          className="block px-2 py-1.5 font-mono text-xs text-ink-faint"
+                          title={`No startups in ${r.label} × ${c.label}`}
+                        >
+                          —
+                        </span>
+                      )}
+                    </td>
+                  );
+                })}
+                <td className="px-2 py-1.5 text-right font-mono text-xs tabular-nums text-ink-secondary">
+                  {r.total}
+                </td>
+              </tr>
+            ))}
+            <tr className="border-t border-line-strong">
+              <th
+                scope="row"
+                className="sticky left-0 z-10 bg-surface px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-wider text-ink-faint"
+              >
+                All
+              </th>
+              {matrix.cols.map((c) => (
+                <td
+                  key={c.value}
+                  className="px-2 py-1.5 text-right font-mono text-xs tabular-nums text-ink-secondary"
+                >
+                  {c.total}
+                </td>
+              ))}
+              <td className="px-2 py-1.5 text-right font-mono text-xs tabular-nums text-ink">
+                {matrix.total}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p className="mt-2 text-[11px] leading-relaxed text-ink-faint">
+        Click any number to filter the list to it. A dash is a real gap — nothing
+        in the pool sits there.
+        {matrix.multiCounted && (
+          <>
+            {" "}
+            Totals count each startup once; cells count memberships, so a company
+            with several sectors or countries appears in each and rows can sum
+            higher than their total.
+          </>
+        )}
+        {(matrix.rowsTruncated || matrix.colsTruncated) && (
+          <>
+            {" "}
+            Showing the largest{" "}
+            {[
+              matrix.rowsTruncated ? `${matrix.rows.length} ${rowDim.label.toLowerCase()} values` : null,
+              matrix.colsTruncated ? `${matrix.cols.length} ${colDim.label.toLowerCase()} values` : null,
+            ]
+              .filter(Boolean)
+              .join(" and ")}{" "}
+            — narrow the filters to see the rest.
+          </>
+        )}
+      </p>
+    </section>
+  );
+}
+
 function SolutionCard({ row: r }: { row: SolutionRow }) {
   return (
     <div className="animate-rise border border-line bg-surface p-4 transition-colors duration-150 hover:border-line-strong">
@@ -335,6 +641,7 @@ function SolutionCard({ row: r }: { row: SolutionRow }) {
                 held
               </span>
             )}
+            <PppChip band={r.pppBand} score={r.pppScore} />
           </div>
           {r.tagline && (
             <p className="mt-1 truncate text-sm text-ink-secondary">{r.tagline}</p>
