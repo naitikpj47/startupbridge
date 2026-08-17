@@ -4,14 +4,16 @@ A two-sided matchmaking platform pairing development-focused startups with
 public-sector problem statements. A program officer describes a need in their
 own words; the system interrogates that need, writes it up using only what the
 officer confirmed, scores the approved pool against it, and — when nothing
-measures up — goes hunting the open web.
+measures up — goes hunting the open web. Officers can also browse the pool as
+a menu of solutions, and take a chosen startup all the way through a funded
+pilot to a public-private partnership at commercial scale.
 
 This document explains how the whole thing works and why it is shaped the way
 it is. It is written for whoever operates or extends it next.
 
 - **Live:** `https://startupbridge-tpbq.vercel.app`
 - **Code:** `github.com/naitikpj47/startupbridge`
-- **As of:** commit `8b217a2`, 13 Aug 2026
+- **As of:** commit `d6cdb80`, 13 Aug 2026
 
 ---
 
@@ -26,12 +28,14 @@ it is. It is written for whoever operates or extends it next.
 7. [The job queue and enrichment pipeline](#7-the-job-queue-and-enrichment-pipeline)
 8. [Demand-driven sourcing and the findings picker](#8-demand-driven-sourcing-and-the-findings-picker)
 9. [Briefing notes](#9-briefing-notes)
-10. [Public surface, auth and security](#10-public-surface-auth-and-security)
-11. [Configuration and operations](#11-configuration-and-operations)
-12. [Testing — what was actually run](#12-testing--what-was-actually-run)
-13. [Build history](#13-build-history)
-14. [Known issues and unverified paths](#14-known-issues-and-unverified-paths)
-15. [Extending it](#15-extending-it)
+10. [The solutions menu](#10-the-solutions-menu)
+11. [Pilots and the pathway to scale](#11-pilots-and-the-pathway-to-scale)
+12. [Public surface, auth and security](#12-public-surface-auth-and-security)
+13. [Configuration and operations](#13-configuration-and-operations)
+14. [Testing — what was actually run](#14-testing--what-was-actually-run)
+15. [Build history](#15-build-history)
+16. [Known issues and unverified paths](#16-known-issues-and-unverified-paths)
+17. [Extending it](#17-extending-it)
 
 ---
 
@@ -76,16 +80,16 @@ That failure is why the system now looks the way it does:
 
 | | |
 |---|---|
-| TypeScript / TSX | 64 files, ~9,850 lines (including tests) |
-| SQL migrations | 12 files, ~1,520 lines |
-| Tables | 14, all with RLS enabled |
-| Enums | 13 |
+| TypeScript / TSX | 69 files, ~11,900 lines (including tests) |
+| SQL migrations | 13 files, ~1,580 lines |
+| Tables | 15, all with RLS enabled |
+| Enums | 16 |
 | Job types | 8 |
-| Test assertions | 42 across 3 suites |
+| Test assertions | 91 across 4 suites |
 
 ### Live data at time of writing
 
-18 problems · 78 startups · 78 profiles · 132 matches · 206 jobs · 20 sourcing runs
+21 problems · 96 startups · 165 matches · 288 jobs · 1 pilot
 
 ### The flow
 
@@ -107,7 +111,18 @@ flowchart TD
     M --> N["enrich_startup job per pick<br/>fetch → extract → score → embed"]
     N --> O["Add to pool"]
     O --> H
+    J --> P["Shortlist<br/>briefing note generated"]
+    P --> Q["Pilot terms<br/>$500k · 12 months · objectives"]
+    Q --> R["Outcome recorded<br/>against those objectives"]
+    R --> S{"Met its<br/>objectives?"}
+    S -->|recommend PPP| T["Five-stage pathway<br/>to commercial scale"]
+    S -->|extend / close out| U["Logged and done"]
 ```
+
+There is a second way in, for officers who would rather browse than ask: the
+**solutions menu** ([§10](#10-the-solutions-menu)) is the whole pool behind
+sixteen filters, and a startup picked from there enters the same
+shortlist → pilot → pathway arc.
 
 ### Two surfaces
 
@@ -122,7 +137,7 @@ flowchart TD
 
 ## 3. Data model
 
-Twelve migrations, applied in filename order. Every table has RLS enabled.
+Thirteen migrations, applied in filename order. Every table has RLS enabled.
 
 ### Tables
 
@@ -135,6 +150,7 @@ Twelve migrations, applied in filename order. Every table has RLS enabled.
 | `startup_profiles` | Everything derived: `profile_text`, `embedding`, `base_readiness`, `data_confidence`, `field_provenance`, `metrics`. One row per startup (`unique` FK). |
 | `affiliations` | University / accelerator links, with a `verified` boolean that gates the institutional-backing signal. |
 | `matches` | One row per (problem, startup). Holds all four scores plus workflow state. |
+| `pilots` | Terms for a funded pilot on one match — budget, window, objectives — then outcome and the PPP pathway. `match_id` is **unique**: the pilot *is* that pairing's next step, so a re-run is an edit, not a second row. |
 | `outreach` | Contact log per match. |
 | `scoring_config` | **Single row.** Every tunable weight and threshold. |
 | `jobs` | The work queue. |
@@ -154,6 +170,9 @@ org_type                university | research_institute | accelerator | gov_lab
 affiliation_relationship spinoff | incubated | cohort | research_partner
 problem_status          draft | open | matching | closed
 match_status            suggested | shortlisted | introduced | engaged | dropped
+pilot_status            drafted | agreed | underway | completed | cancelled
+pilot_outcome           met_objectives | partial | not_met
+scale_decision          recommend_ppp | extend_pilot | close_out
 outreach_response       pending | interested | declined
 sourcing_status         running | completed | failed
 job_status              queued | running | succeeded | failed
@@ -177,7 +196,7 @@ absent* is enforced in the DDL so it cannot be lost downstream.
 
 The `anon` role has **literally zero surface**:
 
-- RLS on all 14 tables, and no anon policy exists anywhere.
+- RLS on all 15 tables, and no anon policy exists anywhere.
 - `revoke all on all tables/sequences/functions in schema public from anon`.
 - Four `alter default privileges ... revoke` statements, so future objects
   inherit nothing.
@@ -193,11 +212,12 @@ as $$ select exists (
 ) $$;
 ```
 
-Ten tables share one blanket policy (`for all to authenticated using
-(is_team_member()) with check (is_team_member())`). `team_members` and `jobs`
-are SELECT-only — *the queue is machinery, not data*. `rate_limits` and
-`claim_codes` have RLS enabled and **zero policies**: deny-all to everyone but
-the service role.
+Eleven tables share one blanket policy (`for all to authenticated using
+(is_team_member()) with check (is_team_member())`) — `pilots` among them, since
+officers write pilot terms directly through their own session rather than
+through machinery. `team_members` and `jobs` are SELECT-only — *the queue is
+machinery, not data*. `rate_limits` and `claim_codes` have RLS enabled and
+**zero policies**: deny-all to everyone but the service role.
 
 > Every function is created `set search_path = ''` to prevent search-path
 > hijacking of a `SECURITY DEFINER` function. That is why pgvector's operator
@@ -647,7 +667,147 @@ Zero invented figures; institutions referred to generically throughout.
 
 ---
 
-## 10. Public surface, auth and security
+## 10. The solutions menu
+
+`/dashboard/startups`, titled in the client's own words: *"a menu of innovative
+solutions for development challenges."* The Ask flow serves an officer who
+knows their problem; this serves one who wants to see what exists.
+
+### Sixteen facets
+
+| Group | Facets |
+|---|---|
+| Find | Free text — every word must appear somewhere across name, domain, tagline, description, full profile text, sectors, technologies and SDGs; word order irrelevant |
+| Pool | Vetted pool (default) · any status · under review · just submitted |
+| Deployability | Matchable (clears [the gate](#62-the-gate)) · held until PoC confirmed |
+| What they do | Sector · SDG · Technology |
+| Geography | Active-in country · Region · HQ country |
+| Evidence | PoC status · Infrastructure need · Readiness band · Data confidence |
+| Track record | Government experience · Institutional backing · Funding band · Team size |
+| Meta | Source · Sort (readiness / newest / name) |
+
+### Three decisions worth knowing
+
+**The pool loads whole and filters in process.** Tens of rows, not tens of
+thousands — one query, every cross-cutting filter, no index planning. This is
+what makes an exhaustive facet rail cheap. It stops being the right call in the
+low thousands; at that point the same predicates move into SQL, which is why
+the engine is written as pure functions over plain rows
+(`src/lib/solutions.ts`) rather than woven into the page.
+
+**Facet options derive from the data.** `facetOptions()` collects the distinct
+values actually present, so the rail never offers a checkbox that matches
+nothing.
+
+**The NULL rule extends to filtering.** Every facet that can be unknown offers
+*unknown* as an explicit choice, and a filter for a known value never quietly
+matches an unknown one:
+
+```ts
+function facetMatch(selected: string[], value: string | null): boolean {
+  if (!selected.length) return true;
+  if (value === null) return selected.includes("unknown");
+  return selected.some((s) => s.toLowerCase() === value.toLowerCase());
+}
+```
+
+Filtering for field-deployed startups is a question about evidence. A profile
+with no evidence is a different answer, not a near-miss. The same logic governs
+readiness (`unscored` is its own band, never folded into "below 40"), funding
+(a confirmed `$0` is `zero`, never `unknown`) and team size.
+
+One GET form drives the whole rail, so every filtered view is a URL an officer
+can send to a colleague. Sorting by readiness puts unscored rows **last** — an
+unknown is less precise, not worse, but a ranked list has to put it somewhere
+and the honest place is after the measured ones.
+
+---
+
+## 11. Pilots and the pathway to scale
+
+What happens after a match is chosen. One `pilots` row per match, on the
+problem page below the match list.
+
+### Designing a pilot
+
+Available on matches at `shortlisted`, `introduced` or `engaged` — a chosen
+startup, not a mere suggestion. The officer sets:
+
+| Field | Default | Bounds |
+|---|---|---|
+| `budget_usd` | **500,000** | > 0, capped at $100M |
+| `duration_months` | **12** | 1–60 |
+| `started_on` | none | optional `YYYY-MM-DD` |
+| `objectives` | seeded (below) | ≥ 1, each with an optional measure |
+| `milestones` | none | month must fall inside the window; sorted |
+
+Defaults are a starting point, not a policy — the UI says so.
+
+### Objectives are the officer's words
+
+The only prefill is `seedObjectives()`, which lifts the officer's **own
+confirmed intake answer** on *what good looks like*, verbatim, and labels it as
+theirs. A `success` dimension marked unknown seeds nothing; a problem predating
+the structured intake seeds nothing.
+
+> A pilot agreement is exactly the kind of document that gets forwarded, so
+> nothing in it may originate from a model.
+
+This is the same doctrine as [§4](#4-the-anti-fabrication-doctrine), applied at
+the point where the tool starts producing commitments rather than analysis.
+
+### Lifecycle
+
+```
+drafted → agreed → underway → completed
+                 ↘ cancelled
+```
+
+Completion requires an outcome — `met_objectives`, `partial` or `not_met` —
+plus free-text notes recording what actually happened against each objective.
+Two database CHECK constraints hold the shape:
+
+```sql
+check (outcome is null or status = 'completed'),
+check (scale_decision is null or outcome is not null)
+```
+
+An outcome cannot exist on an unfinished pilot, and a scale decision cannot
+exist without an outcome to decide on. Completion therefore never goes through
+`setPilotStatus` — it goes through `recordPilotOutcome`, which writes both.
+
+### The pathway to commercial scale
+
+A completed pilot takes one decision: **recommend for PPP scale-up**, extend,
+or close out. Recommending opens a five-stage tracker:
+
+1. **Evaluate against objectives** — results against each objective, with
+   evidence that would satisfy an external reviewer
+2. **Government counterpart and mandate** — the implementing agency's
+   commitment, and the policy hook the project sits under
+3. **PPP model and procurement route** — partnership structure, procurement
+   route, the startup's defined role
+4. **Financing and risk allocation** — public, private or blended capital, and
+   who carries which risk
+5. **Procurement to commercial close** — run it, negotiate, hand over
+
+Each stage carries a checkbox and the officer's notes. `pathwayWithStage()`
+merges one update into stored jsonb and returns the canonical shape — every
+known stage, in order, unknown keys dropped — so a hand-edited or legacy row
+cannot accumulate junk. Institutions stay generic throughout; the officer names
+their own counterparts in the notes.
+
+### Authorization
+
+Pilots are team data, not machinery, so every write goes through the officer's
+RLS-scoped client rather than the service role. Each action calls `ownedMatch()`
+first, re-verifying that the match id from the browser really belongs to the
+problem id from the browser — the two arrive independently and are not trusted
+to agree.
+
+---
+
+## 12. Public surface, auth and security
 
 ### Authorization is layered downward
 
@@ -658,7 +818,24 @@ courtesy, not the wall.*
 
 Officer pages read through the RLS-scoped session client but switch to the
 service-role client for machinery — the jobs queue, `problem_similarities`,
-`request_sourcing` — which officers deliberately cannot touch directly.
+`request_sourcing` — which officers deliberately cannot touch directly. The
+line is *machinery versus data*: pilots, matches and problems are the
+officer's own records and are written through their session; the queue and the
+similarity RPC are plumbing and are not.
+
+### Officer routes
+
+| Route | What it is |
+|---|---|
+| `/dashboard` | The Ask — the centerpiece ([§5](#5-the-ask-flow)) |
+| `/dashboard/problems` | Past asks |
+| `/dashboard/problems/[id]` | One problem: brief, open questions, matches, **pilots**, hunt findings |
+| `/dashboard/startups` | The solutions menu ([§10](#10-the-solutions-menu)) |
+| `/dashboard/startups/[id]` | One startup: brief, evidence, readiness, traction, matches last |
+| `/dashboard/queue` | Review queue — the global inbox of everything awaiting vetting |
+| `/dashboard/config` | Scoring config editor |
+| `/dashboard/import` | CSV import |
+| `/status` | Pipeline health |
 
 ### Public intake
 
@@ -691,7 +868,7 @@ nothing bouncy. All text colours were darkened to clear WCAG AA at 12px
 
 ---
 
-## 11. Configuration and operations
+## 13. Configuration and operations
 
 ### Environment variables
 
@@ -719,7 +896,7 @@ host's blast radius).
 ```bash
 npm run dev      # next dev
 npm run build    # next build
-npm test         # 42 assertions across three suites
+npm test         # 91 assertions across four suites
 npm run lint     # eslint
 ```
 
@@ -752,14 +929,14 @@ Three mechanisms, deliberately overlapping:
    upkeep inside the database: finds work, un-sticks the queue, **enqueues**
    jobs. It never calls an external API.
 3. **Vercel cron** daily at 21:00 UTC (05:00 Asia/Manila). Hobby plans allow
-   daily only — see [§14](#14-known-issues-and-unverified-paths).
+   daily only — see [§16](#16-known-issues-and-unverified-paths).
 
 Long sourcing runs exceed any serverless budget; run those from a machine with
 no time limit via `npx tsx scripts/worker.ts`.
 
 ---
 
-## 12. Testing — what was actually run
+## 14. Testing — what was actually run
 
 ### 12.1 The automated suite
 
@@ -767,11 +944,12 @@ no time limit via `npx tsx scripts/worker.ts`.
 npm test
 ```
 
-**42 assertions, three suites, no model calls, runs in seconds.**
+**91 assertions, four suites, no model calls, runs in seconds.**
 
 | Suite | Assertions | Covers |
 |---|---|---|
 | `tests/gate.test.ts` | **27** | The sufficiency gate and the gap rule. Hermetic — no database, no network. |
+| `tests/solutions.test.ts` | **49** | The menu's filter engine, the pilot sanitizers, the pathway merge, objective seeding. Hermetic. |
 | `tests/picker.test.mts` | **7** | The picker's ownership and double-spend guards, against the live database with adversarial input. |
 | `tests/findings.test.mts` | **8** | The findings view's derived flags against real data. |
 
@@ -799,6 +977,26 @@ What the picker suite asserts, with deliberately hostile input:
 - The in-flight filter is a strict subset of owned candidates.
 - It **warns** if the candidate count ever exceeds the `.in()` cap of 25.
 
+What the menu and pilot suite asserts, in the same spirit:
+
+- Filtering for deployed-in-field **excludes** unknown PoC; `unknown` is a
+  separate, selectable answer; selecting both matches both.
+- `gov=unknown` matches only NULL — never a confirmed *no*.
+- A bootstrapped `$0` is the `zero` band, never `unknown`. Unscored readiness
+  is its own band, never "below 40".
+- Band edges hold: 79 is not 80+; exactly $5M is the 1m–5m band.
+- Search is case-insensitive, order-independent, and a single missing word
+  excludes the row.
+- Readiness sort puts unscored **last**, not zeroth.
+- Facet options never include a value no row has.
+- Pilot sanitizers reject a zero, negative or non-numeric budget, a 0- or
+  61-month timeline, and milestones outside the window; junk input returns
+  empty rather than throwing.
+- `pathwayWithStage()` always returns all five stages in order, preserves
+  prior stages across updates, and drops unknown keys from stored jsonb.
+- `seedObjectives()` takes the confirmed `success` answer verbatim, and seeds
+  **nothing** from an answer marked unknown or a problem with no intake record.
+
 ### 12.2 Live end-to-end runs
 
 | Run | Result |
@@ -809,6 +1007,8 @@ What the picker suite asserts, with deliberately hostile input:
 | Forced failure (PocDoc, unreachable site) | Retried 3× with backoff, buried as `failed`, surfaced on the row |
 | Briefing generation | Generated; every figure fact-checked against the database; zero fabrications |
 | Deployment verification | Signed into the live Vercel site, confirmed 7 candidates / 6 checkboxes / 1 "Add to pool", ticked two boxes → *"Run deep analysis on 2 selected"* |
+| Menu filters | `poc=deployed_in_field&sector=health` narrowed 96 rows to exactly 2, with 2 cards rendered; all sixteen facets present in the document |
+| Full pilot arc | Designed a pilot → agreed → underway → recorded *met its objectives* → recommended PPP → ticked stage 1 of 5. Every transition persisted and re-read from the database. |
 
 Total AI spend across all live testing: **well under 10¢.**
 
@@ -850,7 +1050,7 @@ Plus the `MIN_ANSWER` correction (the gate rejected `UK`).
 
 ---
 
-## 13. Build history
+## 15. Build history
 
 Seven phases, 25 commits, 11–13 August 2026.
 
@@ -874,9 +1074,15 @@ Then four commits of correction driven by real use:
 | `418fc0e` | Sourcing reachable even when a problem already has matches |
 | `8b217a2` | Nine defects fixed; the test suite added |
 
+And a third round, adding the browse-and-fund half of the product:
+
+| Commit | Change |
+|---|---|
+| `d6cdb80` | The solutions menu, pilot terms, and the PPP scale-up pathway |
+
 ---
 
-## 14. Known issues and unverified paths
+## 16. Known issues and unverified paths
 
 Listed plainly because a document that only describes the happy path is a
 liability.
@@ -903,12 +1109,15 @@ operator following it verbatim on Hobby will **break their deploy**.
 
 ### Not CI-safe
 
-`npm test` cannot run from a clean checkout. Two of the three suites read
+`npm test` cannot run from a clean checkout. Two of the four suites read
 `../.env.local` directly and hardcode the problem UUID
 `f808789f-c347-4991-b122-cba8a4f2b3ec`, with non-null assertions on
 `"Access Bio"` and `"PocDoc"` that become a TypeError if that seed data changes.
 `findings.test.mts` also asserts on mutable live state — re-running the worker
-can flip it with no code change. **Only `tsx tests/gate.test.ts` is hermetic.**
+can flip it with no code change — it did exactly that after the pg_cron sweep
+rewrote `profile_text`, which is how the second `analysed`-marker bug was
+caught. **`tests/gate.test.ts` and `tests/solutions.test.ts` are hermetic**
+(76 of the 91 assertions); the two `.mts` suites are not.
 
 ### Requires manual setup
 
@@ -947,6 +1156,23 @@ the default failure mode.**
 CSV import, the config editor's save path, and the nightly scraper (no sources
 enabled).
 
+### Demo data in production
+
+The live database carries **one pilot** created while testing the feature: a
+$500,000 / 12-month pilot on *Frostvane Systems* (a fictional seed startup) for
+the island-provinces cold-chain problem, walked all the way to *recommended for
+PPP scale-up* with stage 1 of 5 ticked. It is a useful demo artifact and a
+misleading record — delete the row before the platform carries real programme
+data.
+
+### Menu scale ceiling
+
+The solutions menu loads the whole pool and filters in memory. Correct at 96
+startups; it degrades somewhere in the low thousands, and the profile text
+loaded for search is the heaviest part. The filter engine is written as pure
+predicates over rows precisely so the same logic can move into SQL when that
+day comes — but nothing warns you it has arrived.
+
 ### Security
 
 - **`adb123` is the password on a publicly reachable deployment.** Change it.
@@ -957,7 +1183,7 @@ enabled).
 
 ---
 
-## 15. Extending it
+## 17. Extending it
 
 **Tuning the matching** — everything lives in the single `scoring_config` row,
 editable from `/dashboard/config`. Nothing is hard-coded; there is no fallback,
@@ -976,72 +1202,20 @@ it to the precedence chain in `activeSearchProvider()`.
 `NEED_ONE_OF`. The gate, the rail and the gap rule all derive from that one
 array.
 
+**Adding a menu facet** — add the field to `SolutionRow`, populate it in the
+page's row mapping, add a clause to `matchesFilters()`, add the key to
+`parseFilters()` and `activeFilterCount()`, and render a `FacetGroup` or
+`FacetSelect`. If the field can be unknown, it **must** offer `unknown`
+explicitly — that is the house rule, and `tests/solutions.test.ts` is where you
+prove it.
+
+**Changing the PPP pathway** — edit `PPP_STAGES` in
+`src/lib/pilots-shared.ts`. Stages are stored by key in jsonb and normalized on
+every write, so adding, reordering or renaming is safe: unknown keys from older
+rows are dropped on the next merge and missing ones default to not-done. No
+migration needed.
+
 **Where to be careful** — anything touching the NULL-vs-ZERO rule, the gate, or
 the intake's three enforcement points. Those are the parts that keep the tool
 honest, and they are the parts a reasonable-looking refactor will quietly break.
 Run `npm test` before and after.
-
----
-
-## Addendum — 13 Aug 2026: solutions menu, pilots, PPP pathway
-
-Three features added after the document above was written. Counts that changed:
-**15 tables, 16 enums** (`pilot_status`, `pilot_outcome`, `scale_decision`),
-migration 13 (`20260813090000_pilots.sql`), and a fourth test suite
-(`tests/solutions.test.ts`, 49 assertions — `npm test` now runs **91**).
-
-### The solutions menu (`/dashboard/startups`)
-
-The startups tab rebuilt as the client's phrase describes it: *"a menu of
-innovative solutions for development challenges."* Sixteen facets in a sticky
-rail — free text (every word, any field), pool status, deployability
-(gate-derived matchable/held), sector, SDG, technology, active-in country,
-region, HQ, PoC status, infrastructure need, readiness bands, data confidence,
-government experience, institutional backing, funding bands, team bands,
-source, and sort. One GET form, so every filtered view is a shareable URL.
-
-Mechanics worth knowing: the pool loads whole and filters in process (tens of
-rows — one query, no index planning); facet options derive from the data so
-the rail never offers a dead checkbox; and the NULL-vs-ZERO rule extends to
-filtering — every facet that can be unknown offers **unknown** explicitly, and
-a filter for a known value never quietly matches an unknown one. The engine is
-pure (`src/lib/solutions.ts`) and covered by 31 of the new assertions.
-
-### Pilots (`pilots` table, problem-page section)
-
-A chosen startup (match status shortlisted/introduced/engaged) can be given
-pilot terms: budget (default **$500,000**), implementation window (default
-**12 months**, 1–60), optional start date, objectives (text + how measured),
-optional milestones. One pilot per match (`match_id unique`); lifecycle
-`drafted → agreed → underway → completed | cancelled`, with a recorded outcome
-(`met_objectives | partial | not_met`, plus notes) required by a DB check
-before a pilot can be `completed`.
-
-The doctrine holds here too: everything is officer-authored. The only prefill
-is `seedObjectives()` — the officer's own confirmed intake answer on "what
-good looks like", verbatim, labelled as theirs. A pilot agreement is exactly
-the kind of document that gets forwarded, so nothing in it may originate from
-a model. Writes go through the officer's RLS-scoped client (pilots are team
-data, not machinery), and every action re-verifies the match belongs to the
-problem the caller names.
-
-### The PPP pathway
-
-A completed pilot takes a scale decision: **recommend for PPP scale-up**,
-extend, or close out. Recommending opens a five-stage tracker — evaluate
-against objectives, government counterpart and mandate, PPP model and
-procurement route, financing and risk allocation, procurement to commercial
-close — each stage checkable with officer notes, persisted in `scale_pathway`
-jsonb via a merge that normalizes to the canonical stage list (junk keys are
-dropped, `pathwayWithStage()` is pure and tested). Institutions stay generic
-throughout.
-
-### Verified
-
-49/49 deterministic assertions; full lifecycle driven in a browser against the
-production build — design → agreed → underway → outcome → recommend PPP →
-stage 1 of 5 ticked, all persisted; the menu confirmed rendering all sixteen
-facets, with `poc=deployed_in_field&sector=health` narrowing 96 rows to the
-correct 2. The live findings suite also caught a regression in this batch's
-own predecessor (see §8.3 — `profile_text` as the analysed marker) exactly the
-way it was designed to.
