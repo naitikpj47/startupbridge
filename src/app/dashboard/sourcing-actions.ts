@@ -62,7 +62,7 @@ export async function huntFindings(problemId: string): Promise<FindingsView> {
     .select(
       "id, name, domain, website, status, created_at, " +
         "startup_profiles(base_readiness, data_confidence, poc_evidence, " +
-        "hq_country, poc_status, infra_intensity, sectors, profile_text)"
+        "hq_country, poc_status, infra_intensity, sectors)"
     )
     .eq("sourced_for", problemId)
     .neq("status", "rejected")
@@ -137,19 +137,19 @@ export async function huntFindings(problemId: string): Promise<FindingsView> {
           poc_status: string | null;
           infra_intensity: string | null;
           sectors: string[] | null;
-          profile_text: string | null;
         }
       | null;
-    // Completion, not score. base_readiness is NULL whenever none of the
-    // six readiness signals is known — and website enrichment writes
-    // none of them, so a candidate that was fully and successfully
-    // analysed still scores NULL. Keying "analysed" off it meant the
-    // rows reverted to unticked checkboxes after a paid run and could be
-    // paid for again, forever. profile_text is written by
-    // recomputeStartup at the end of the chain, so it marks the work as
-    // actually done. Readiness stays NULL and is displayed as "—",
-    // which is the honest answer.
-    const analysed = Boolean(p?.profile_text);
+    // Completion, not score — and the marker has been wrong twice, so
+    // the reasoning matters. base_readiness is NULL after a successful
+    // analysis (website enrichment writes none of the six readiness
+    // signals). profile_text looked right but is rebuilt by ANY
+    // recompute — the pg_cron sweep wrote it for candidates whose sites
+    // were never fetched, which the live test caught. The embedding is
+    // the artifact that only the end of the analysis chain produces,
+    // and it is also the point of the exercise: analysed means
+    // scoreable, scoreable means embedded. The similarity RPC returns
+    // exactly the embedded rows, so presence in its result IS the flag.
+    const analysed = simByStartup.has(r.id);
     return {
       id: r.id,
       name: r.name,

@@ -585,19 +585,23 @@ and filters candidates already in flight, so a double-click cannot double-spend.
 ### 8.3 `analysed` is completion, not score
 
 ```ts
-const analysed = Boolean(p?.profile_text);
+const analysed = simByStartup.has(r.id); // embedded ⇔ analysed
 ```
 
-This was a real bug, caught by running one analysis for real. `base_readiness`
-is NULL whenever none of the six readiness signals is known — and website
-enrichment writes *none* of them. Keyed off readiness, a candidate that had
-been fetched, extracted, scored and embedded at real cost still reported
-"never analysed": the row reverted to an unticked checkbox, offered itself for
-the same paid run again, and could never be added to the pool.
+The marker has been wrong twice, and both times a test caught it, so the
+history is worth keeping. `base_readiness` is NULL after a fully successful
+analysis (website enrichment writes none of the six readiness signals), so
+keying off it made every paid analysis report "never analysed" — rows reverted
+to unticked checkboxes and could be paid for again forever. The first fix,
+`profile_text`, looked right but is rebuilt by *any* recompute: the pg_cron
+sweep wrote it for candidates whose sites were never fetched, which the live
+findings test caught on its next run.
 
-`profile_text` is written by `recomputeStartup()` at the end of the chain, so
-it marks the work as done. Readiness stays NULL and displays as `—`, which is
-the honest answer.
+The embedding is the artifact only the end of the analysis chain produces, and
+it is also the point of the exercise — analysed means scoreable, scoreable
+means embedded. The similarity RPC returns exactly the embedded rows, so
+presence in its result is the flag. Readiness stays NULL and displays as `—`,
+which is the honest answer.
 
 ### 8.4 Failures are visible
 
@@ -976,3 +980,68 @@ array.
 the intake's three enforcement points. Those are the parts that keep the tool
 honest, and they are the parts a reasonable-looking refactor will quietly break.
 Run `npm test` before and after.
+
+---
+
+## Addendum — 13 Aug 2026: solutions menu, pilots, PPP pathway
+
+Three features added after the document above was written. Counts that changed:
+**15 tables, 16 enums** (`pilot_status`, `pilot_outcome`, `scale_decision`),
+migration 13 (`20260813090000_pilots.sql`), and a fourth test suite
+(`tests/solutions.test.ts`, 49 assertions — `npm test` now runs **91**).
+
+### The solutions menu (`/dashboard/startups`)
+
+The startups tab rebuilt as the client's phrase describes it: *"a menu of
+innovative solutions for development challenges."* Sixteen facets in a sticky
+rail — free text (every word, any field), pool status, deployability
+(gate-derived matchable/held), sector, SDG, technology, active-in country,
+region, HQ, PoC status, infrastructure need, readiness bands, data confidence,
+government experience, institutional backing, funding bands, team bands,
+source, and sort. One GET form, so every filtered view is a shareable URL.
+
+Mechanics worth knowing: the pool loads whole and filters in process (tens of
+rows — one query, no index planning); facet options derive from the data so
+the rail never offers a dead checkbox; and the NULL-vs-ZERO rule extends to
+filtering — every facet that can be unknown offers **unknown** explicitly, and
+a filter for a known value never quietly matches an unknown one. The engine is
+pure (`src/lib/solutions.ts`) and covered by 31 of the new assertions.
+
+### Pilots (`pilots` table, problem-page section)
+
+A chosen startup (match status shortlisted/introduced/engaged) can be given
+pilot terms: budget (default **$500,000**), implementation window (default
+**12 months**, 1–60), optional start date, objectives (text + how measured),
+optional milestones. One pilot per match (`match_id unique`); lifecycle
+`drafted → agreed → underway → completed | cancelled`, with a recorded outcome
+(`met_objectives | partial | not_met`, plus notes) required by a DB check
+before a pilot can be `completed`.
+
+The doctrine holds here too: everything is officer-authored. The only prefill
+is `seedObjectives()` — the officer's own confirmed intake answer on "what
+good looks like", verbatim, labelled as theirs. A pilot agreement is exactly
+the kind of document that gets forwarded, so nothing in it may originate from
+a model. Writes go through the officer's RLS-scoped client (pilots are team
+data, not machinery), and every action re-verifies the match belongs to the
+problem the caller names.
+
+### The PPP pathway
+
+A completed pilot takes a scale decision: **recommend for PPP scale-up**,
+extend, or close out. Recommending opens a five-stage tracker — evaluate
+against objectives, government counterpart and mandate, PPP model and
+procurement route, financing and risk allocation, procurement to commercial
+close — each stage checkable with officer notes, persisted in `scale_pathway`
+jsonb via a merge that normalizes to the canonical stage list (junk keys are
+dropped, `pathwayWithStage()` is pure and tested). Institutions stay generic
+throughout.
+
+### Verified
+
+49/49 deterministic assertions; full lifecycle driven in a browser against the
+production build — design → agreed → underway → outcome → recommend PPP →
+stage 1 of 5 ticked, all persisted; the menu confirmed rendering all sixteen
+facets, with `poc=deployed_in_field&sector=health` narrowing 96 rows to the
+correct 2. The live findings suite also caught a regression in this batch's
+own predecessor (see §8.3 — `profile_text` as the analysed marker) exactly the
+way it was designed to.

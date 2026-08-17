@@ -23,7 +23,7 @@ const { data: rawRows } = await sb
   .select(
     "id, name, domain, website, status, created_at, " +
       "startup_profiles(base_readiness, data_confidence, poc_evidence, " +
-      "hq_country, poc_status, infra_intensity, sectors, profile_text)"
+      "hq_country, poc_status, infra_intensity, sectors)"
   )
   .eq("sourced_for", PROBLEM)
   .neq("status", "rejected")
@@ -69,7 +69,11 @@ const view = rows.map((r) => {
   const p = (Array.isArray(r.startup_profiles) ? r.startup_profiles[0] : r.startup_profiles) as
     | Record<string, unknown>
     | null;
-  const analysed = Boolean(p?.profile_text);
+  // Mirrors huntFindings: analysed means embedded, and the similarity
+  // RPC returns exactly the embedded rows. profile_text was the previous
+  // marker and this suite is what proved it wrong — any recompute (e.g.
+  // the pg_cron sweep) rebuilds it without a site ever being fetched.
+  const analysed = simBy.has(r.id);
   const pending = inFlight.has(r.id);
   return {
     name: r.name,

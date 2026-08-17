@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx tests/gate.test.ts && tsx tests/picker.test.mts && tsx tests/findings.test.mts"
+    "test": "tsx tests/gate.test.ts && tsx tests/solutions.test.ts && tsx tests/picker.test.mts && tsx tests/findings.test.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",

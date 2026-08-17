@@ -6,6 +6,8 @@ import { saveBrief, closeProblem, runMatchingForProblem } from "../../actions";
 import { SourcingPanel } from "../../sourcing-panel";
 import { StatusChip, PageTitle, EmptyState } from "../../bits";
 import { MatchList, type MatchDisplay } from "./matches-client";
+import { PilotsPanel, type PilotMatchRow, type PilotData } from "./pilots-panel";
+import { seedObjectives, type PathwayStage } from "@/lib/pilots-shared";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +38,47 @@ export default async function ProblemDetail({
   if (hasEmbedding) {
     ranked = await rankedMatches(admin, id);
   }
+
+  // Chosen startups — shortlisted or further — are what pilots are
+  // designed against, whether or not they still clear today's bar.
+  const { data: chosenRaw } = await sb
+    .from("matches")
+    .select("id, status, startups(id, name), pilots(*)")
+    .eq("problem_id", id)
+    .in("status", ["shortlisted", "introduced", "engaged"])
+    .order("created_at");
+  const pilotRows: PilotMatchRow[] = ((chosenRaw ?? []) as unknown as {
+    id: string;
+    status: string;
+    startups: { id: string; name: string } | { id: string; name: string }[] | null;
+    pilots: Record<string, unknown> | Record<string, unknown>[] | null;
+  }[]).map((m) => {
+    const s = Array.isArray(m.startups) ? m.startups[0] : m.startups;
+    const rawPilot = Array.isArray(m.pilots) ? m.pilots[0] : m.pilots;
+    const pilot: PilotData | null = rawPilot
+      ? {
+          budgetUsd: Number(rawPilot.budget_usd),
+          durationMonths: Number(rawPilot.duration_months),
+          startedOn: (rawPilot.started_on as string | null) ?? null,
+          objectives: (rawPilot.objectives ?? []) as PilotData["objectives"],
+          milestones: (rawPilot.milestones ?? []) as PilotData["milestones"],
+          status: String(rawPilot.status),
+          outcome: (rawPilot.outcome as string | null) ?? null,
+          outcomeNotes: (rawPilot.outcome_notes as string | null) ?? null,
+          scaleDecision: (rawPilot.scale_decision as string | null) ?? null,
+          pathwayStages:
+            ((rawPilot.scale_pathway as { stages?: PathwayStage[] })?.stages ??
+              []) as PathwayStage[],
+        }
+      : null;
+    return {
+      matchId: m.id,
+      startupId: s?.id ?? "",
+      startupName: s?.name ?? "(unknown startup)",
+      matchStatus: m.status,
+      pilot,
+    };
+  });
 
   const allRows = [...ranked.matches, ...ranked.adjacent];
   const ids = allRows.map((m) => m.id);
@@ -196,6 +239,23 @@ export default async function ProblemDetail({
             </div>
           </>
         )}
+      </div>
+
+      {/* From chosen startup to funded terms to — when it works — a
+          pathway toward commercial scale. */}
+      <div className="mt-12">
+        <h2 className="text-sm font-semibold text-ink">Pilots</h2>
+        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-ink-secondary">
+          Set the terms a funded pilot runs under — budget, implementation
+          window, objectives — then record how it went. Successful pilots can
+          be put on a pathway to commercial scale as a public-private
+          partnership.
+        </p>
+        <PilotsPanel
+          problemId={id}
+          rows={pilotRows}
+          seeds={seedObjectives(problem.intake_answers)}
+        />
       </div>
 
       {/* Always here, whatever the pool turned up. Wanting MORE options
